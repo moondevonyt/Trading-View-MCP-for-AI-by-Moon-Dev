@@ -1,0 +1,22 @@
+# 🌙 Moon Dev's TradingView MCP
+
+# secrets + local config
+.env
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# chrome profile (never commit a logged-in browser profile)
+.tradingview_mcp_chrome/
+
+# tool call logs
+*.jsonl
+
+# scratch screenshots written by mount_pine.py / tv_screenshot
+moon_dev_chart.png
+_debug_state.png

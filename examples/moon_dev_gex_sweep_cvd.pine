@@ -1,0 +1,156 @@
+//@version=5
+// Moon Dev's 0DTE Liquidity Sweep & Gamma Pivot Detector
+indicator("Moon Dev GEX Sweep & CVD", shorttitle="MD_GEX_SWP", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+grpPiv   = "Sweep Detection"
+pivLen   = input.int(5,   "Pivot Lookback (bars)",          minval=2, group=grpPiv)
+swpWin   = input.int(3,   "Sweep Window (bars to reclaim)", minval=1, maxval=10, group=grpPiv)
+maxSweeps= input.int(20,  "Max active sweep levels",        minval=1, maxval=200, group=grpPiv)
+
+grpInst  = "Instrument & Magnets"
+instSel  = input.string("SPY", "Instrument", options=["SPY","ES"], group=grpInst)
+spyStep  = input.float(5.0,  "SPY strike spacing", group=grpInst)
+esStep   = input.float(25.0, "ES  strike spacing", group=grpInst)
+
+grpPH    = "Power Hour"
+phMins   = input.int(60, "Power Hour minutes (last X of RTH)", minval=10, maxval=180, group=grpPH)
+phColor  = input.color(color.new(color.orange, 88), "Power Hour shade", group=grpPH)
+
+grpCVD   = "Cumulative Delta"
+showCVD  = input.bool(true, "Show CVD proxy", group=grpCVD)
+cvdFastL = input.int(9,  "CVD fast EMA", group=grpCVD)
+cvdSlowL = input.int(21, "CVD slow EMA", group=grpCVD)
+divLB    = input.int(20, "Divergence lookback (bars)", group=grpCVD)
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow (low,  pivLen, pivLen)
+
+var float[] swingHighs = array.new_float()
+var float[] swingLows  = array.new_float()
+var int[]   swingHIdx  = array.new_int()
+var int[]   swingLIdx  = array.new_int()
+
+if not na(ph)
+    array.push(swingHighs, ph)
+    array.push(swingHIdx,  bar_index - pivLen)
+    if array.size(swingHighs) > 50
+        array.shift(swingHighs)
+        array.shift(swingHIdx)
+if not na(pl)
+    array.push(swingLows, pl)
+    array.push(swingLIdx, bar_index - pivLen)
+    if array.size(swingLows) > 50
+        array.shift(swingLows)
+        array.shift(swingLIdx)
+
+var line[]   sweepLines  = array.new_line()
+var label[]  sweepLabels = array.new_label()
+var float[]  sweepLevels = array.new_float()
+var bool[]   sweepIsHigh = array.new_bool()
+
+sweepHighDetected = false
+sweepLowDetected  = false
+
+if array.size(swingHighs) > 0
+    lvl = array.get(swingHighs, array.size(swingHighs)-1)
+    idx = array.get(swingHIdx,  array.size(swingHIdx)-1)
+    if bar_index - idx <= swpWin + pivLen
+        pokedAbove = ta.highest(high, swpWin) > lvl
+        closedBack = close < lvl
+        if pokedAbove and closedBack
+            dup = false
+            if array.size(sweepLevels) > 0
+                for i = 0 to array.size(sweepLevels)-1
+                    if math.abs(array.get(sweepLevels, i) - lvl) < syminfo.mintick * 4
+                        dup := true
+                        break
+            if not dup
+                sweepHighDetected := true
+                ln = line.new(bar_index, lvl, bar_index+1, lvl, extend=extend.right, color=color.red, width=2)
+                lb = label.new(bar_index, lvl, "Moon Dev SWEEP HIGH " + str.tostring(lvl, format.mintick), style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+                array.push(sweepLines,  ln)
+                array.push(sweepLabels, lb)
+                array.push(sweepLevels, lvl)
+                array.push(sweepIsHigh, true)
+
+if array.size(swingLows) > 0
+    lvl = array.get(swingLows, array.size(swingLows)-1)
+    idx = array.get(swingLIdx, array.size(swingLIdx)-1)
+    if bar_index - idx <= swpWin + pivLen
+        pokedBelow = ta.lowest(low, swpWin) < lvl
+        closedBack = close > lvl
+        if pokedBelow and closedBack
+            dup = false
+            if array.size(sweepLevels) > 0
+                for i = 0 to array.size(sweepLevels)-1
+                    if math.abs(array.get(sweepLevels, i) - lvl) < syminfo.mintick * 4
+                        dup := true
+                        break
+            if not dup
+                sweepLowDetected := true
+                ln = line.new(bar_index, lvl, bar_index+1, lvl, extend=extend.right, color=color.lime, width=2)
+                lb = label.new(bar_index, lvl, "Moon Dev SWEEP LOW " + str.tostring(lvl, format.mintick), style=label.style_label_up, color=color.new(color.green, 20), textcolor=color.white, size=size.small)
+                array.push(sweepLines,  ln)
+                array.push(sweepLabels, lb)
+                array.push(sweepLevels, lvl)
+                array.push(sweepIsHigh, false)
+
+if array.size(sweepLines) > maxSweeps
+    line.delete(array.shift(sweepLines))
+    label.delete(array.shift(sweepLabels))
+    array.shift(sweepLevels)
+    array.shift(sweepIsHigh)
+
+if array.size(sweepLevels) > 0
+    i = 0
+    while i < array.size(sweepLevels)
+        lvl   = array.get(sweepLevels, i)
+        isHi  = array.get(sweepIsHigh, i)
+        broke = (isHi and close > lvl) or (not isHi and close < lvl)
+        if broke
+            line.delete(array.get(sweepLines, i))
+            label.delete(array.get(sweepLabels, i))
+            array.remove(sweepLines, i)
+            array.remove(sweepLabels, i)
+            array.remove(sweepLevels, i)
+            array.remove(sweepIsHigh, i)
+        else
+            i += 1
+
+step = instSel == "SPY" ? spyStep : esStep
+magnetUp   = math.ceil (close / step) * step
+magnetDown = math.floor(close / step) * step
+plot(magnetUp,   "Magnet Up",   color=color.new(color.yellow, 0), style=plot.style_circles, linewidth=1)
+plot(magnetDown, "Magnet Down", color=color.new(color.aqua,   0), style=plot.style_circles, linewidth=1)
+crossUp   = ta.cross(close, magnetUp)
+crossDown = ta.cross(close, magnetDown)
+
+isRTH    = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+phStart  = timestamp("America/New_York", year, month, dayofmonth, 16, 0) - phMins * 60 * 1000
+inPH     = isRTH and time >= phStart and time <= timestamp("America/New_York", year, month, dayofmonth, 16, 0)
+bgcolor(inPH ? phColor : na, title="Power Hour")
+
+barDelta = (close - open) * volume
+var float cvd = 0.0
+cvd := cvd + barDelta
+cvdFast = ta.ema(cvd, cvdFastL)
+cvdSlow = ta.ema(cvd, cvdSlowL)
+plot(showCVD ? cvd     : na, "CVD",      color=color.new(color.white, 0), display=display.pane)
+plot(showCVD ? cvdFast : na, "CVD Fast", color=color.new(color.aqua,  0), display=display.pane)
+plot(showCVD ? cvdSlow : na, "CVD Slow", color=color.new(color.fuchsia,0),display=display.pane)
+
+priceHH = high >= ta.highest(high, divLB)[1]
+priceLL = low  <= ta.lowest (low,  divLB)[1]
+cvdHH   = cvd  >= ta.highest(cvd,  divLB)[1]
+cvdLL   = cvd  <= ta.lowest (cvd,  divLB)[1]
+bearDiv = priceHH and not cvdHH
+bullDiv = priceLL and not cvdLL
+plotshape(bearDiv, title="Bear CVD Div", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.tiny)
+plotshape(bullDiv, title="Bull CVD Div", style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.tiny)
+
+alertcondition(sweepHighDetected, title="Sweep High", message="Moon Dev: SWEEP HIGH - short pivot")
+alertcondition(sweepLowDetected,  title="Sweep Low",  message="Moon Dev: SWEEP LOW - long pivot")
+alertcondition(bearDiv,           title="Bear Div",   message="Moon Dev: Bearish CVD divergence")
+alertcondition(bullDiv,           title="Bull Div",   message="Moon Dev: Bullish CVD divergence")
+alertcondition(crossUp,           title="Magnet Up",  message="Moon Dev: Crossed UP through magnet strike")
+alertcondition(crossDown,         title="Magnet Dn",  message="Moon Dev: Crossed DOWN through magnet strike")

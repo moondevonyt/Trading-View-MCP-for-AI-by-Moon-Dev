@@ -1,0 +1,109 @@
+//@version=5
+// Moon Dev's 0DTE Gamma Wall & Trap Detector
+indicator("Moon Dev GEX Walls & Trap", shorttitle="MD_GEX_WALLS", overlay=true, max_lines_count=500, max_labels_count=500)
+
+instrument   = input.string("SPY", "Instrument", options=["SPY", "ES"])
+strikeMinor  = input.float(1.0,  "Minor Strike Spacing (SPY=1, ES=5)", step=0.5)
+strikeMajor  = input.float(5.0,  "Major Strike Spacing (SPY=5, ES=25)", step=1.0)
+numStrikes   = input.int(4,      "Strikes to plot each side", minval=1, maxval=10)
+sigmaMult1   = input.float(1.0,  "VWAP Band Sigma 1")
+sigmaMult2   = input.float(2.0,  "VWAP Band Sigma 2")
+orMinutes    = input.int(30,     "Opening Range Minutes", minval=5, maxval=120)
+showOR       = input.bool(true,  "Show Opening Range")
+showPDHL     = input.bool(true,  "Show Prior Day H/L/C")
+showStrikes  = input.bool(true,  "Show Strike Walls")
+showTraps    = input.bool(true,  "Show Trap Signals")
+bgRegime     = input.bool(true,  "Background Gamma Regime")
+
+vwapVal = ta.vwap(hlc3)
+dev     = ta.stdev(close - vwapVal, 20)
+upper1  = vwapVal + sigmaMult1 * dev
+lower1  = vwapVal - sigmaMult1 * dev
+upper2  = vwapVal + sigmaMult2 * dev
+lower2  = vwapVal - sigmaMult2 * dev
+
+plot(vwapVal, "VWAP (Gamma Flip Proxy)", color=color.new(color.yellow, 0), linewidth=2)
+plot(upper1,  "VWAP +1 sigma", color=color.new(color.aqua, 30))
+plot(lower1,  "VWAP -1 sigma", color=color.new(color.aqua, 30))
+plot(upper2,  "VWAP +2 sigma", color=color.new(color.fuchsia, 30))
+plot(lower2,  "VWAP -2 sigma", color=color.new(color.fuchsia, 30))
+
+vwapRising  = vwapVal > vwapVal[5]
+posGamma    = close > vwapVal and vwapRising
+negGamma    = close < vwapVal and not vwapRising
+bgcolor(bgRegime and posGamma ? color.new(color.green, 92) : na)
+bgcolor(bgRegime and negGamma ? color.new(color.red,   92) : na)
+
+pdh = request.security(syminfo.tickerid, "D", high[1],  lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],   lookahead=barmerge.lookahead_on)
+pdc = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+plot(showPDHL ? pdh : na, "Prior Day High",  color=color.new(color.orange, 0), style=plot.style_linebr)
+plot(showPDHL ? pdl : na, "Prior Day Low",   color=color.new(color.orange, 0), style=plot.style_linebr)
+plot(showPDHL ? pdc : na, "Prior Day Close", color=color.new(color.gray, 0),   style=plot.style_linebr)
+
+var float orHigh = na
+var float orLow  = na
+var int   orEnd  = na
+isRTH   = session.ismarket
+newDay  = ta.change(time("D")) != 0
+if newDay
+    orHigh := na
+    orLow  := na
+    orEnd  := time + orMinutes * 60 * 1000
+if isRTH and time <= orEnd
+    orHigh := na(orHigh) ? high : math.max(orHigh, high)
+    orLow  := na(orLow)  ? low  : math.min(orLow,  low)
+plot(showOR ? orHigh : na, "OR High", color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
+plot(showOR ? orLow  : na, "OR Low",  color=color.new(color.red,  0), style=plot.style_linebr, linewidth=2)
+
+roundTo(_x, _step) => math.round(_x / _step) * _step
+var line[] minorLines = array.new_line()
+var line[] majorLines = array.new_line()
+cleanupLines(arr) =>
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            line.delete(array.get(arr, i))
+        array.clear(arr)
+
+if showStrikes and barstate.islast
+    cleanupLines(minorLines)
+    cleanupLines(majorLines)
+    basePrice = close
+    for i = -numStrikes to numStrikes
+        lvl = roundTo(basePrice, strikeMinor) + i * strikeMinor
+        ln = line.new(bar_index - 50, lvl, bar_index + 10, lvl, color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        array.push(minorLines, ln)
+    for i = -numStrikes to numStrikes
+        lvl = roundTo(basePrice, strikeMajor) + i * strikeMajor
+        col = lvl > basePrice ? color.new(color.red, 20) : color.new(color.green, 20)
+        ln = line.new(bar_index - 50, lvl, bar_index + 10, lvl, color=col, width=2)
+        array.push(majorLines, ln)
+        label.new(bar_index + 10, lvl, (lvl > basePrice ? "CALL WALL " : "PUT WALL ") + str.tostring(lvl, "#.##"),
+                  color=color.new(color.black, 80), textcolor=col, style=label.style_label_left, size=size.small)
+
+nearestCallWall = roundTo(close, strikeMajor) + strikeMajor
+nearestPutWall  = roundTo(close, strikeMajor) - strikeMajor
+volMA           = ta.sma(volume, 20)
+declVol         = volume < volMA
+var int lastBullBreakBar = na
+var int lastBearBreakBar = na
+if high > nearestCallWall and declVol
+    lastBullBreakBar := bar_index
+if low < nearestPutWall and declVol
+    lastBearBreakBar := bar_index
+bullTrap = not na(lastBullBreakBar) and (bar_index - lastBullBreakBar) <= 5 and close < nearestCallWall and close < open
+bearTrap = not na(lastBearBreakBar) and (bar_index - lastBearBreakBar) <= 5 and close > nearestPutWall and close > open
+if showTraps and bullTrap
+    label.new(bar_index, high, "BULL TRAP\nMoon Dev", color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+if showTraps and bearTrap
+    label.new(bar_index, low,  "BEAR TRAP\nMoon Dev", color=color.new(color.green, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+gammaFlipUp   = ta.crossover(close,  vwapVal)
+gammaFlipDown = ta.crossunder(close, vwapVal)
+plotshape(gammaFlipUp,   title="Gamma Flip Up",   style=shape.triangleup,   location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny)
+plotshape(gammaFlipDown, title="Gamma Flip Down", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,  0), size=size.tiny)
+
+alertcondition(bullTrap,      title="Bull Trap",        message="MD_GEX: Bull trap reversal below call wall")
+alertcondition(bearTrap,      title="Bear Trap",        message="MD_GEX: Bear trap reversal above put wall")
+alertcondition(gammaFlipUp,   title="Gamma Flip Up",    message="MD_GEX: Price crossed above VWAP - positive gamma")
+alertcondition(gammaFlipDown, title="Gamma Flip Down",  message="MD_GEX: Price crossed below VWAP - negative gamma")

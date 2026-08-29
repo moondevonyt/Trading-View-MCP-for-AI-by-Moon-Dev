@@ -1,0 +1,152 @@
+//@version=5
+// Moon Dev's 0DTE Regime & Trap Detector
+indicator("Moon Dev GEX Regime & Trap", shorttitle="MD_GEX_REG", overlay=true, max_boxes_count=200, max_labels_count=200, max_lines_count=200)
+
+grpRegime  = "Moon Dev Regime Engine"
+atrLen     = input.int(14,  "ATR length",                    minval=2,  group=grpRegime)
+atrMeanLen = input.int(20,  "ATR baseline (days)",           minval=5,  group=grpRegime)
+sensHi     = input.float(1.20, "Neg-gamma ATR ratio >",      step=0.05, group=grpRegime)
+sensLo     = input.float(0.80, "Pos-gamma ATR ratio <",      step=0.05, group=grpRegime)
+crossWin   = input.int(40,  "VWAP cross lookback bars",      minval=5,  group=grpRegime)
+
+grpTrap    = "Moon Dev Trap Detector"
+orMinutes  = input.int(30,  "Opening range minutes",         minval=5,  group=grpTrap)
+trapBars   = input.int(6,   "Bars to confirm fail-back",     minval=1,  group=grpTrap)
+trapExt    = input.int(80,  "Trap box extension (bars)",     minval=10, group=grpTrap)
+
+grpPin     = "Moon Dev Pin Window"
+pinMinutes = input.int(60,  "Pin window minutes before close", minval=10, group=grpPin)
+magnetLen  = input.int(50,  "Pivot magnet VWAP length",      minval=10, group=grpPin)
+pinMult    = input.float(0.5, "Pin range = VWAP +/- mult*ATR", step=0.1, group=grpPin)
+
+grpViz     = "Moon Dev Viz"
+showTraps  = input.bool(true,  "Show trap boxes",            group=grpViz)
+showPin    = input.bool(true,  "Shade pin window",           group=grpViz)
+showPDS    = input.bool(true,  "Plot prior-day settlement",  group=grpViz)
+
+atrCur  = ta.atr(atrLen)
+atrDay  = request.security(syminfo.tickerid, "D", ta.atr(atrLen))
+atrBase = ta.sma(atrDay, atrMeanLen)
+atrRatio = atrDay / nz(atrBase, atrDay)
+
+var float cumPV  = na
+var float cumVol = na
+newSession = ta.change(time("D")) != 0
+if newSession
+    cumPV  := 0.0
+    cumVol := 0.0
+tp = (high + low + close) / 3.0
+cumPV  := nz(cumPV)  + tp * nz(volume, 1)
+cumVol := nz(cumVol) + nz(volume, 1)
+vwap   = cumVol > 0 ? cumPV / cumVol : close
+
+crossedUp   = ta.crossover(close, vwap)
+crossedDn   = ta.crossunder(close, vwap)
+crossEvent  = (crossedUp or crossedDn) ? 1 : 0
+crossCount  = math.sum(crossEvent, crossWin)
+
+var float sessOpen = na
+if newSession
+    sessOpen := open
+dispNorm = math.abs(close - nz(sessOpen, open)) / nz(atrCur, 1)
+
+scoreVol   = (atrRatio - 1.0) * 2.0
+scoreDisp  = math.min(dispNorm, 3.0) / 1.5
+scoreChop  = -math.min(crossCount, 20) / 10.0
+regimeScore = scoreVol + scoreDisp + scoreChop
+
+regimeNeg = regimeScore >  0.8
+regimePos = regimeScore < -0.4
+regimeTxt = regimeNeg ? "NEGATIVE GAMMA (trend)" : regimePos ? "POSITIVE GAMMA (mean revert)" : "TRANSITION"
+regimeCol = regimeNeg ? color.new(color.red, 0) : regimePos ? color.new(color.green, 0) : color.new(color.yellow, 0)
+
+var table regTbl = table.new(position.top_right, 1, 3, border_width=1)
+if barstate.islast
+    table.cell(regTbl, 0, 0, "Moon Dev Regime", bgcolor=color.new(color.black, 70), text_color=color.white, text_size=size.normal)
+    table.cell(regTbl, 0, 1, regimeTxt, bgcolor=regimeCol, text_color=color.white, text_size=size.large)
+    table.cell(regTbl, 0, 2, "score: " + str.tostring(regimeScore, "#.##") + "  ATRr: " + str.tostring(atrRatio, "#.##") + "  Xs: " + str.tostring(crossCount), bgcolor=color.new(color.black, 70), text_color=color.white)
+
+var string lastRegime = ""
+regimeChanged = regimeTxt != lastRegime and bar_index > 5
+if regimeChanged
+    label.new(bar_index, high, "Moon Dev regime -> " + regimeTxt, style=label.style_label_down, color=regimeCol, textcolor=color.white, size=size.small)
+    lastRegime := regimeTxt
+
+sessionMins = math.floor((time - time("D")) / 60000)
+inOR  = sessionMins >= 0 and sessionMins <= orMinutes
+var float orHi = na
+var float orLo = na
+if newSession
+    orHi := high
+    orLo := low
+if inOR
+    orHi := math.max(nz(orHi, high), high)
+    orLo := math.min(nz(orLo, low),  low)
+plot(showTraps ? orHi : na, "OR High", color=color.new(color.aqua, 0), style=plot.style_linebr, linewidth=1)
+plot(showTraps ? orLo : na, "OR Low",  color=color.new(color.fuchsia, 0), style=plot.style_linebr, linewidth=1)
+
+var int   breakHiBar = na
+var float breakHiPx  = na
+var int   breakLoBar = na
+var float breakLoPx  = na
+if not inOR and not na(orHi) and high > orHi and na(breakHiBar)
+    breakHiBar := bar_index
+    breakHiPx  := high
+if not inOR and not na(orLo) and low  < orLo and na(breakLoBar)
+    breakLoBar := bar_index
+    breakLoPx  := low
+
+bullTrap = not na(breakHiBar) and (bar_index - breakHiBar) <= trapBars and close < orHi
+bearTrap = not na(breakLoBar) and (bar_index - breakLoBar) <= trapBars and close > orLo
+
+if bullTrap and showTraps
+    box.new(left=breakHiBar, top=breakHiPx, right=bar_index + trapExt, bottom=orHi, bgcolor=color.new(color.red, 80), border_color=color.red)
+    label.new(bar_index, breakHiPx, "Moon Dev BULL TRAP", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+    breakHiBar := na
+    breakHiPx  := na
+if bearTrap and showTraps
+    box.new(left=breakLoBar, top=orLo, right=bar_index + trapExt, bottom=breakLoPx, bgcolor=color.new(color.green, 80), border_color=color.green)
+    label.new(bar_index, breakLoPx, "Moon Dev BEAR TRAP", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+    breakLoBar := na
+    breakLoPx  := na
+
+if newSession
+    breakHiBar := na
+    breakHiPx  := na
+    breakLoBar := na
+    breakLoPx  := na
+
+magnetNum = math.sum(tp * nz(volume, 1), magnetLen)
+magnetDen = math.sum(nz(volume, 1), magnetLen)
+magnet    = magnetDen > 0 ? magnetNum / magnetDen : close
+plot(magnet, "Moon Dev Pivot Magnet", color=color.new(color.orange, 0), linewidth=3)
+
+magnetCrossUp = ta.crossover(close, magnet)
+magnetCrossDn = ta.crossunder(close, magnet)
+
+priorClose = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+plot(showPDS ? priorClose : na, "Moon Dev Prior Settle", color=color.new(color.white, 0), style=plot.style_circles, linewidth=2)
+
+isRth = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+minsFromOpen = math.floor((time - time("D", "0930-1600", "America/New_York")) / 60000)
+inPinWindow  = isRth and minsFromOpen >= (390 - pinMinutes)
+bgcolor(showPin and inPinWindow ? color.new(color.purple, 88) : na)
+
+pinHi = vwap + pinMult * atrDay
+pinLo = vwap - pinMult * atrDay
+plot(showPin and inPinWindow ? pinHi : na, "Pin Hi", color=color.new(color.purple, 20), linewidth=2)
+plot(showPin and inPinWindow ? pinLo : na, "Pin Lo", color=color.new(color.purple, 20), linewidth=2)
+plot(vwap, "Moon Dev VWAP", color=color.new(color.blue, 0), linewidth=1)
+
+var bool pinAnnounced = false
+if newSession
+    pinAnnounced := false
+if inPinWindow and not pinAnnounced
+    label.new(bar_index, high, "Moon Dev PIN WINDOW", style=label.style_label_down, color=color.new(color.purple, 0), textcolor=color.white, size=size.normal)
+    pinAnnounced := true
+
+alertcondition(regimeChanged, title="Regime Change", message="Moon Dev: regime flipped")
+alertcondition(bullTrap,      title="Bull Trap",     message="Moon Dev: bull trap above OR high")
+alertcondition(bearTrap,      title="Bear Trap",     message="Moon Dev: bear trap below OR low")
+alertcondition(magnetCrossUp, title="Magnet Up",     message="Moon Dev: crossed pivot magnet up")
+alertcondition(magnetCrossDn, title="Magnet Dn",     message="Moon Dev: crossed pivot magnet down")

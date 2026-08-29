@@ -1,0 +1,72 @@
+//@version=6
+// 🌙 Moon Dev's Liquidation Heatlines — BTC
+// Top 10 closest-to-liquidation longs (red) + shorts (green) from the
+// Hyperliquid top-50 feed at api.moondev.com. Regenerate to refresh.
+indicator("🌙 Moon Dev Liq Lines — BTC", shorttitle="🌙 Liq BTC", overlay=true, max_lines_count=50, max_labels_count=60)
+
+// --- INPUTS ----------------------------------------------------------------
+extendBars = input.int(120, "Extend Lines (bars)", 10, 500)
+lineWidth  = input.int(4,   "Line Width",          1,   8)
+showLabels = input.bool(true, "Show Labels")
+labelSize  = input.string("normal", "Label Size", options=["tiny","small","normal","large"])
+
+// --- PALETTE (Moon Dev cosmic) --------------------------------------------
+cLongHot  = color.rgb(255,  64,  64)  // danger red — longs liquidated here
+cLongWarm = color.rgb(255, 140,  40)  // amber
+cShortHot = color.rgb(0,   230, 118)  // neon green — shorts liquidated here
+cShortWarm= color.rgb(64,  224, 208)  // cyan
+cLabelBg  = color.new(color.rgb(10, 10, 25), 15)
+
+// --- DATA ------------------------------------------------------------------
+// Parallel arrays per side — Pine's array.from() is varargs-of-one-type so
+// we split price + label arrays and index them together. 🌙
+var float[]  longPrices  = array.from(77542.275600, 77506.627300, 77504.817900, 77492.577200, 77449.069100, 77440.911300, 77421.419500, 77415.088100, 77347.526600, 77312.608900)
+var string[] longLabels  = array.from("#1  $604k  40x  1.04%  0x33e6", "#2  $101k  40x  1.09%  0x11fa", "#3  $75k  40x  1.09%  0x9815", "#4  $97k  40x  1.11%  0x81f5", "#5  $1.57M  40x  1.16%  0x68a4", "#6  $78k  40x  1.17%  0xe2a3", "#7  $392k  40x  1.20%  0x7cf4", "#8  $2.00M  40x  1.21%  0x5989", "#9  $627k  40x  1.29%  0x3c23", "#10  $360k  40x  1.34%  0x53f8")
+var float[]  shortPrices = array.from(78684.307500, 78777.269600, 78781.216800, 78805.461500, 78823.430000, 78954.712500, 78983.331100, 78996.374700, 78996.922100, 79007.715700)
+var string[] shortLabels = array.from("#1  $200k  40x  0.41%  0xa865", "#2  $257k  40x  0.53%  0x53fa", "#3  $137k  40x  0.54%  0x22a0", "#4  $133k  40x  0.57%  0xdf2f", "#5  $160k  40x  0.59%  0xedf2", "#6  $94k  40x  0.76%  0x47e8", "#7  $368k  40x  0.80%  0x31c3", "#8  $321k  40x  0.81%  0x1e5a", "#9  $459k  40x  0.81%  0xc62d", "#10  $157k  40x  0.83%  0xb9a5")
+
+labelSz = labelSize == "tiny"   ? size.tiny :
+          labelSize == "small"  ? size.small :
+          labelSize == "normal" ? size.normal : size.large
+
+// --- DRAW ------------------------------------------------------------------
+// One-shot on the last bar. Re-draws each tick so labels track `bar_index`.
+var line[]  drawnLines  = array.new<line>()
+var label[] drawnLabels = array.new<label>()
+
+if barstate.islast
+    // Clear old artifacts so we don't pile up on each tick
+    for ln in drawnLines
+        line.delete(ln)
+    array.clear(drawnLines)
+    for lb in drawnLabels
+        label.delete(lb)
+    array.clear(drawnLabels)
+
+    x1 = bar_index - 400
+    x2 = bar_index + extendBars
+
+    // Longs — top 3 get extra-bold hot red, rest stay fully opaque warm
+    for i = 0 to array.size(longPrices) - 1
+        p   = array.get(longPrices, i)
+        txt = array.get(longLabels, i)
+        col = i < 3 ? cLongHot : cLongWarm
+        w   = i < 3 ? lineWidth + 1 : lineWidth  // top 3 thicker still
+        array.push(drawnLines, line.new(x1, p, x2, p, color=col, width=w, style=line.style_solid))
+        if showLabels
+            array.push(drawnLabels, label.new(x2, p, "🔴 L" + str.tostring(i+1) + "  " + txt, style=label.style_label_left, color=cLabelBg, textcolor=col, size=labelSz, tooltip="Long liquidation — price drops here and these get wiped"))
+
+    // Shorts
+    for i = 0 to array.size(shortPrices) - 1
+        p   = array.get(shortPrices, i)
+        txt = array.get(shortLabels, i)
+        col = i < 3 ? cShortHot : cShortWarm
+        w   = i < 3 ? lineWidth + 1 : lineWidth
+        array.push(drawnLines, line.new(x1, p, x2, p, color=col, width=w, style=line.style_solid))
+        if showLabels
+            array.push(drawnLabels, label.new(x2, p, "🟢 S" + str.tostring(i+1) + "  " + txt, style=label.style_label_left, color=cLabelBg, textcolor=col, size=labelSz, tooltip="Short liquidation — price rises here and these get squeezed"))
+
+// --- HEADER LABEL ----------------------------------------------------------
+if barstate.islast
+    hdr = "🌙 Moon Dev Liq Lines — BTC  |  top 10/side  |  data: api.moondev.com"
+    array.push(drawnLabels, label.new(bar_index, high * 1.002, hdr, style=label.style_label_down, color=color.new(color.rgb(170, 120, 255), 10), textcolor=color.white, size=size.small))

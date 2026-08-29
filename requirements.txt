@@ -1,0 +1,8 @@
+# 🌙 Moon Dev's TradingView MCP Server — dependencies
+# Standalone MCP. Nothing here depends on any other MCP server.
+
+mcp>=1.0.0
+websocket-client>=1.7.0
+requests>=2.31.0
+pydantic>=2.0
+python-dotenv>=1.0.0

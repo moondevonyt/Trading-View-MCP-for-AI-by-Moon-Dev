@@ -1,0 +1,154 @@
+//@version=6
+// 🌙 Moon Dev's Rainbow Wave 20/40
+// Dual SMA with a WAY more fun visual: 14 rainbow-cycling bands between the
+// 20 and 40, chunky neon SMA lines, double-layer glow, and pulsing bubbles
+// riding the midline. Each bar the palette rotates, so the ribbon literally
+// looks like it's breathing. Built by Moon Dev 🌙.
+indicator("Moon Dev Rainbow Wave 20/40", shorttitle="🌙 Wave 20/40", overlay=true, max_lines_count=50, max_labels_count=50)
+
+// --- INPUTS ----------------------------------------------------------------
+GRP_MA  = "Moving Averages"
+GRP_VIS = "Rainbow Visuals"
+GRP_SIG = "Signals"
+
+fastLen   = input.int(20,  "Fast SMA Length",  2,   200, group=GRP_MA)
+slowLen   = input.int(40,  "Slow SMA Length",  5,   400, group=GRP_MA)
+src       = input.source(close, "Source", group=GRP_MA)
+
+bandCount   = input.int(14, "Rainbow Bands",     4, 20, group=GRP_VIS, tooltip="How many rainbow stripes between the 20 and 40 SMA")
+showGlow    = input.bool(true, "Double Glow Halo",   group=GRP_VIS)
+showBubbles = input.bool(true, "Pulsing Bubbles",    group=GRP_VIS, tooltip="Animated dots on the midline that pulse with bar index")
+animate     = input.bool(true, "Animate Palette",    group=GRP_VIS, tooltip="Rotate the rainbow forward each bar")
+showBg      = input.bool(true, "Regime Background",  group=GRP_VIS)
+fillAlpha   = input.int(55, "Base Transparency", 0, 95, group=GRP_VIS)
+
+showMarkers = input.bool(true, "Cross Markers",  group=GRP_SIG)
+
+// --- NEON PALETTE ----------------------------------------------------------
+// 7 anchor colors we rotate through for a rainbow gradient.
+c0 = color.rgb(255,  64, 129)   // hot pink
+c1 = color.rgb(255, 128,  64)   // neon orange
+c2 = color.rgb(255, 221,  87)   // sun yellow
+c3 = color.rgb( 68, 255, 140)   // neon green
+c4 = color.rgb( 64, 224, 208)   // cyan
+c5 = color.rgb(120, 130, 255)   // electric indigo
+c6 = color.rgb(210,  90, 255)   // magenta violet
+
+cBull = color.rgb(0,   230, 118)
+cBear = color.rgb(255,  82,  82)
+
+// Map a float t in [0,1] through the 7-anchor rainbow.
+rainbow(float t) =>
+    float tt = math.min(math.max(t, 0.0), 0.999999)
+    float s  = tt * 6.0                 // 0..6 segments
+    int   seg = int(math.floor(s))
+    float f   = s - seg
+    color a = seg == 0 ? c0 : seg == 1 ? c1 : seg == 2 ? c2 : seg == 3 ? c3 : seg == 4 ? c4 : seg == 5 ? c5 : c6
+    color b = seg == 0 ? c1 : seg == 1 ? c2 : seg == 2 ? c3 : seg == 3 ? c4 : seg == 4 ? c5 : seg == 5 ? c6 : c0
+    color.from_gradient(f, 0.0, 1.0, a, b)
+
+// --- CORE MATH -------------------------------------------------------------
+smaFast = ta.sma(src, fastLen)
+smaSlow = ta.sma(src, slowLen)
+
+bullRegime  = smaFast > smaSlow
+slopeFast   = smaFast - smaFast[3]
+slopeSlow   = smaSlow - smaSlow[3]
+strongTrend = bullRegime ? (slopeFast > 0 and slopeSlow > 0) : (slopeFast < 0 and slopeSlow < 0)
+
+spread     = math.abs(smaFast - smaSlow)
+spreadAvg  = ta.sma(spread, 50)
+spreadHot  = spreadAvg > 0 ? math.min(spread / spreadAvg, 3.0) : 0.0
+
+// Palette rotation (breathing effect) — shift the rainbow offset forward every bar.
+float phase = animate ? (bar_index % 60) / 60.0 : 0.0
+
+// --- PLOTS: SMAs with double glow halo -------------------------------------
+plot(showGlow ? smaFast : na, "Fast Halo Outer", color=color.new(c4, 85), linewidth=8, editable=false)
+plot(showGlow ? smaFast : na, "Fast Halo Inner", color=color.new(c4, 60), linewidth=4, editable=false)
+plot(showGlow ? smaSlow : na, "Slow Halo Outer", color=color.new(c6, 85), linewidth=8, editable=false)
+plot(showGlow ? smaSlow : na, "Slow Halo Inner", color=color.new(c6, 60), linewidth=4, editable=false)
+
+pFast = plot(smaFast, "SMA 20", color=c4, linewidth=3)
+pSlow = plot(smaSlow, "SMA 40", color=c6, linewidth=3)
+
+// --- RAINBOW FILL LAYER ----------------------------------------------------
+// Primary fill picks a color from the rainbow based on regime + spread.
+color baseCol = bullRegime ? (strongTrend ? cBull : rainbow((phase + 0.25) % 1.0)) :
+                             (strongTrend ? cBear : rainbow((phase + 0.75) % 1.0))
+int alphaMain = math.max(15, fillAlpha - int(spreadHot * 12))
+fill(pFast, pSlow, color=color.new(baseCol, alphaMain), title="Rainbow Fill")
+
+// Extra rainbow bands — line plots interpolating between the 20 and 40 with
+// a cycled color per band. Unrolled because Pine v6 disallows `plot()` in loops.
+band(int i, int n, int pAlpha) =>
+    float t  = i / float(n)
+    float ti = (t + phase) % 1.0
+    plot(smaFast * (1 - t) + smaSlow * t, title="Band " + str.tostring(i),
+         color=color.new(rainbow(ti), pAlpha),
+         style=plot.style_circles, linewidth=1, editable=false)
+
+int bandAlpha = math.min(90, fillAlpha + 20)
+if bandCount >=  2
+    band( 1, bandCount, bandAlpha)
+if bandCount >=  3
+    band( 2, bandCount, bandAlpha)
+if bandCount >=  4
+    band( 3, bandCount, bandAlpha)
+if bandCount >=  5
+    band( 4, bandCount, bandAlpha)
+if bandCount >=  6
+    band( 5, bandCount, bandAlpha)
+if bandCount >=  7
+    band( 6, bandCount, bandAlpha)
+if bandCount >=  8
+    band( 7, bandCount, bandAlpha)
+if bandCount >=  9
+    band( 8, bandCount, bandAlpha)
+if bandCount >= 10
+    band( 9, bandCount, bandAlpha)
+if bandCount >= 11
+    band(10, bandCount, bandAlpha)
+if bandCount >= 12
+    band(11, bandCount, bandAlpha)
+if bandCount >= 13
+    band(12, bandCount, bandAlpha)
+if bandCount >= 14
+    band(13, bandCount, bandAlpha)
+if bandCount >= 15
+    band(14, bandCount, bandAlpha)
+if bandCount >= 16
+    band(15, bandCount, bandAlpha)
+if bandCount >= 17
+    band(16, bandCount, bandAlpha)
+if bandCount >= 18
+    band(17, bandCount, bandAlpha)
+if bandCount >= 19
+    band(18, bandCount, bandAlpha)
+
+// --- PULSING BUBBLES ON THE MIDLINE ----------------------------------------
+float mid = (smaFast + smaSlow) / 2.0
+// Highlight every 3rd bar with a fat neon dot that rainbow-shifts.
+bool pulse = showBubbles and (bar_index % 3 == 0)
+color bubbleCol = rainbow((phase + 0.5) % 1.0)
+plot(pulse ? mid : na, title="🌙 Bubbles",
+     color=color.new(bubbleCol, 20),
+     style=plot.style_circles, linewidth=4, editable=false)
+
+// --- CROSS MARKERS ---------------------------------------------------------
+bullCross = ta.crossover(smaFast, smaSlow)
+bearCross = ta.crossunder(smaFast, smaSlow)
+
+plotshape(showMarkers and bullCross, title="🌙 Bull Cross 20>40", style=shape.labelup,
+          location=location.belowbar, color=cBull, textcolor=color.white, text="🌙", size=size.small)
+plotshape(showMarkers and bearCross, title="🌙 Bear Cross 20<40", style=shape.labeldown,
+          location=location.abovebar, color=cBear, textcolor=color.white, text="☄️", size=size.small)
+
+// --- REGIME BACKGROUND TINT ------------------------------------------------
+color bgTint = bullRegime ? (strongTrend ? color.new(cBull, 94) : color.new(c3, 95)) :
+                            (strongTrend ? color.new(cBear, 94) : color.new(c0, 95))
+bgcolor(showBg ? bgTint : na, title="Moon Dev Regime Tint")
+
+// --- ALERTS ----------------------------------------------------------------
+alertcondition(bullCross, title="🌙 Rainbow Wave Bull Cross", message="🌙 Moon Dev Rainbow Wave: 20 crossed ABOVE 40 — bullish")
+alertcondition(bearCross, title="🌙 Rainbow Wave Bear Cross", message="🌙 Moon Dev Rainbow Wave: 20 crossed BELOW 40 — bearish")

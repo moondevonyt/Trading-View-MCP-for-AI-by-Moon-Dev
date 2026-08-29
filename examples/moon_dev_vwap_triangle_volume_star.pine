@@ -1,0 +1,62 @@
+//@version=5
+// 🌙 Moon Dev's VWAP Triangle + Volume Star
+//
+// Two marks, two different places on the chart:
+//   TRIANGLE  -> price crosses VWAP. Sits right at the bar, on the price.
+//                Up triangle under the bar on a cross UP through VWAP.
+//                Down triangle over the bar on a cross DOWN through VWAP.
+//   STAR ★    -> this bar's volume is N times the LAST bar's volume.
+//                Sits pinned at the top of the pane, out of the way of price.
+//
+// Built by Moon Dev 🌙
+indicator("🌙 Moon Dev VWAP Triangle + Volume Star", shorttitle="MD VWAP+VOL", overlay=true)
+
+// ---------------- inputs ----------------
+volMult   = input.float(3.0,  "Volume spike multiple (x last bar)", minval=1.0, step=0.5, group="Volume Star")
+showVwap  = input.bool(true,  "Show the VWAP line",  group="VWAP Triangle")
+upColor   = input.color(color.new(color.lime,   0), "Cross-up triangle",   group="VWAP Triangle")
+dnColor   = input.color(color.new(color.red,    0), "Cross-down triangle", group="VWAP Triangle")
+starColor = input.color(color.new(color.yellow, 0), "Volume star",         group="Volume Star")
+
+// ---------------- vwap ----------------
+// ta.vwap resets each session, so this is the intraday VWAP everyone watches.
+vwapLine = ta.vwap(hlc3)
+
+crossUp = ta.crossover(close, vwapLine)
+crossDn = ta.crossunder(close, vwapLine)
+
+plot(showVwap ? vwapLine : na, "VWAP", color=color.new(color.aqua, 0), linewidth=2)
+
+// Triangles ride the price: below the bar on a cross up, above it on a cross down.
+plotshape(crossUp, title="VWAP cross up",   style=shape.triangleup,   location=location.belowbar, color=upColor, size=size.small)
+plotshape(crossDn, title="VWAP cross down", style=shape.triangledown, location=location.abovebar, color=dnColor, size=size.small)
+
+// ---------------- volume spike ----------------
+// "3x bigger than the last bar" -> compare against volume[1], not an average.
+volSpike = not na(volume) and not na(volume[1]) and volume[1] > 0 and volume >= volume[1] * volMult
+
+// The star goes SOMEWHERE ELSE: pinned to the top of the pane, never on the bar.
+plotchar(volSpike, title="Volume star", char="★", location=location.top, color=starColor, size=size.small)
+
+// ---------------- Moon Dev counters ----------------
+// Running totals so we can prove the marks actually fired, not just eyeball them.
+var int nTri  = 0
+var int nStar = 0
+if crossUp or crossDn
+    nTri += 1
+if volSpike
+    nStar += 1
+
+if barstate.islast
+    var table md = table.new(position.top_right, 2, 3, border_width=1)
+    table.cell(md, 0, 0, "🌙 Moon Dev", text_color=color.white, bgcolor=color.new(color.blue, 20))
+    table.cell(md, 1, 0, "count",       text_color=color.white, bgcolor=color.new(color.blue, 20))
+    table.cell(md, 0, 1, "▲▼ VWAP cross", text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(md, 1, 1, str.tostring(nTri),  text_color=color.aqua,   bgcolor=color.new(color.black, 40))
+    table.cell(md, 0, 2, "★ Vol " + str.tostring(volMult) + "x", text_color=color.white, bgcolor=color.new(color.black, 40))
+    table.cell(md, 1, 2, str.tostring(nStar), text_color=color.yellow, bgcolor=color.new(color.black, 40))
+
+// Alerts so this can drive a bot later, not just a chart.
+alertcondition(crossUp,  title="🌙 VWAP cross UP",   message="Moon Dev: price crossed ABOVE VWAP")
+alertcondition(crossDn,  title="🌙 VWAP cross DOWN", message="Moon Dev: price crossed BELOW VWAP")
+alertcondition(volSpike, title="🌙 Volume spike",    message="Moon Dev: volume spiked vs last bar")

@@ -1,0 +1,353 @@
+//@version=5
+// Moon Dev's 0DTE Gamma Stack - all 3 modules in one indicator
+// Module A: Walls + VWAP bands + opening range + bull/bear traps + gamma flip
+// Module B: Regime engine (positive/negative gamma label) + pin window + pivot magnet
+// Module C: Liquidity sweeps + round-strike magnets + power-hour shade + CVD divergence
+indicator("Moon Dev GEX Stack (Walls+Regime+Sweep)", shorttitle="MD_GEX_STACK", overlay=true,
+          max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+// =============================================================
+// GLOBAL INPUTS
+// =============================================================
+grpMod   = "Moon Dev Modules - toggle each"
+modA     = input.bool(true, "A) Walls + Traps + VWAP", group=grpMod)
+modB     = input.bool(true, "B) Regime + Pin + Magnet", group=grpMod)
+modC     = input.bool(true, "C) Sweeps + CVD + Power Hour", group=grpMod)
+
+grpInst  = "Instrument"
+instSel  = input.string("SPY", "Instrument", options=["SPY","ES"], group=grpInst)
+spyMinor = input.float(1.0,  "SPY minor spacing", step=0.5, group=grpInst)
+spyMajor = input.float(5.0,  "SPY major spacing", group=grpInst)
+esMinor  = input.float(5.0,  "ES  minor spacing", group=grpInst)
+esMajor  = input.float(25.0, "ES  major spacing", group=grpInst)
+
+stepMinor = instSel == "SPY" ? spyMinor : esMinor
+stepMajor = instSel == "SPY" ? spyMajor : esMajor
+
+// =============================================================
+// SHARED SESSION VWAP (used by all 3 modules)
+// =============================================================
+var float cumPV  = na
+var float cumVol = na
+newSession = ta.change(time("D")) != 0
+if newSession
+    cumPV  := 0.0
+    cumVol := 0.0
+tp = (high + low + close) / 3.0
+cumPV  := nz(cumPV)  + tp * nz(volume, 1)
+cumVol := nz(cumVol) + nz(volume, 1)
+sessVwap = cumVol > 0 ? cumPV / cumVol : close
+
+plot(sessVwap, "Moon Dev VWAP", color=color.new(color.yellow, 0), linewidth=2)
+
+// =============================================================
+// MODULE A: WALLS + TRAPS
+// =============================================================
+grpA = "A) Walls / Traps"
+numStrikes = input.int(4,    "Strikes each side",   minval=1, maxval=10, group=grpA)
+sigma1     = input.float(1.0, "VWAP sigma 1",       group=grpA)
+sigma2     = input.float(2.0, "VWAP sigma 2",       group=grpA)
+orMinutes  = input.int(30,   "OR minutes",           minval=5, maxval=120, group=grpA)
+showOR     = input.bool(true,  "Show opening range", group=grpA)
+showPDHL   = input.bool(true,  "Show prior day HLC", group=grpA)
+showWalls  = input.bool(true,  "Show strike walls",  group=grpA)
+showTraps  = input.bool(true,  "Show wall traps",    group=grpA)
+
+devA   = ta.stdev(close - sessVwap, 20)
+up1    = sessVwap + sigma1 * devA
+lo1    = sessVwap - sigma1 * devA
+up2    = sessVwap + sigma2 * devA
+lo2    = sessVwap - sigma2 * devA
+plot(modA ? up1 : na, "+1s", color=color.new(color.aqua, 30))
+plot(modA ? lo1 : na, "-1s", color=color.new(color.aqua, 30))
+plot(modA ? up2 : na, "+2s", color=color.new(color.fuchsia, 30))
+plot(modA ? lo2 : na, "-2s", color=color.new(color.fuchsia, 30))
+
+pdh = request.security(syminfo.tickerid, "D", high[1],  lookahead=barmerge.lookahead_on)
+pdl = request.security(syminfo.tickerid, "D", low[1],   lookahead=barmerge.lookahead_on)
+pdc = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+plot(modA and showPDHL ? pdh : na, "Prior High",  color=color.new(color.orange, 0), style=plot.style_linebr)
+plot(modA and showPDHL ? pdl : na, "Prior Low",   color=color.new(color.orange, 0), style=plot.style_linebr)
+plot(modA and showPDHL ? pdc : na, "Prior Close", color=color.new(color.gray, 0),   style=plot.style_linebr)
+
+var float orHi = na
+var float orLo = na
+var int   orEnd = na
+isRTH = session.ismarket
+if newSession
+    orHi  := na
+    orLo  := na
+    orEnd := time + orMinutes * 60 * 1000
+if isRTH and time <= orEnd
+    orHi := na(orHi) ? high : math.max(orHi, high)
+    orLo := na(orLo) ? low  : math.min(orLo, low)
+plot(modA and showOR ? orHi : na, "OR High", color=color.new(color.lime, 0), style=plot.style_linebr, linewidth=2)
+plot(modA and showOR ? orLo : na, "OR Low",  color=color.new(color.red,  0), style=plot.style_linebr, linewidth=2)
+
+roundTo(_x, _step) => math.round(_x / _step) * _step
+var line[] minorLs = array.new_line()
+var line[] majorLs = array.new_line()
+var label[] majorLbls = array.new_label()
+
+cleanupLs(arr) =>
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            line.delete(array.get(arr, i))
+        array.clear(arr)
+
+cleanupLbls(arr) =>
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            label.delete(array.get(arr, i))
+        array.clear(arr)
+
+if modA and showWalls and barstate.islast
+    cleanupLs(minorLs)
+    cleanupLs(majorLs)
+    cleanupLbls(majorLbls)
+    bp = close
+    for i = -numStrikes to numStrikes
+        lvl = roundTo(bp, stepMinor) + i * stepMinor
+        ln = line.new(bar_index - 50, lvl, bar_index + 10, lvl, color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        array.push(minorLs, ln)
+    for i = -numStrikes to numStrikes
+        lvl = roundTo(bp, stepMajor) + i * stepMajor
+        col = lvl > bp ? color.new(color.red, 20) : color.new(color.green, 20)
+        ln = line.new(bar_index - 50, lvl, bar_index + 10, lvl, color=col, width=2)
+        array.push(majorLs, ln)
+        lb = label.new(bar_index + 10, lvl, (lvl > bp ? "CALL WALL " : "PUT WALL ") + str.tostring(lvl, "#.##"),
+                       color=color.new(color.black, 80), textcolor=col, style=label.style_label_left, size=size.small)
+        array.push(majorLbls, lb)
+
+nearestCallWall = roundTo(close, stepMajor) + stepMajor
+nearestPutWall  = roundTo(close, stepMajor) - stepMajor
+volMA   = ta.sma(volume, 20)
+declVol = volume < volMA
+var int lastBullBreakBar = na
+var int lastBearBreakBar = na
+if high > nearestCallWall and declVol
+    lastBullBreakBar := bar_index
+if low < nearestPutWall and declVol
+    lastBearBreakBar := bar_index
+bullTrap = not na(lastBullBreakBar) and (bar_index - lastBullBreakBar) <= 5 and close < nearestCallWall and close < open
+bearTrap = not na(lastBearBreakBar) and (bar_index - lastBearBreakBar) <= 5 and close > nearestPutWall and close > open
+if modA and showTraps and bullTrap
+    label.new(bar_index, high, "BULL TRAP\nMoon Dev", color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+if modA and showTraps and bearTrap
+    label.new(bar_index, low,  "BEAR TRAP\nMoon Dev", color=color.new(color.green, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+gammaFlipUp   = ta.crossover(close,  sessVwap)
+gammaFlipDown = ta.crossunder(close, sessVwap)
+plotshape(modA and gammaFlipUp,   title="Gamma Flip Up",   style=shape.triangleup,   location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny)
+plotshape(modA and gammaFlipDown, title="Gamma Flip Down", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,  0), size=size.tiny)
+
+// =============================================================
+// MODULE B: REGIME + PIN + PIVOT MAGNET
+// =============================================================
+grpB = "B) Regime / Pin"
+atrLen     = input.int(14, "ATR length",            minval=2, group=grpB)
+atrMeanLen = input.int(20, "ATR baseline (days)",   minval=5, group=grpB)
+crossWin   = input.int(40, "VWAP cross lookback",   minval=5, group=grpB)
+pinMinutes = input.int(60, "Pin window (mins)",     minval=10, group=grpB)
+magnetLen  = input.int(50, "Pivot magnet length",   minval=10, group=grpB)
+pinMult    = input.float(0.5, "Pin = VWAP +/- mult*ATR", step=0.1, group=grpB)
+showRegime = input.bool(true,  "Show regime table",  group=grpB)
+showPin    = input.bool(true,  "Shade pin window",   group=grpB)
+showMagnet = input.bool(true,  "Show pivot magnet",  group=grpB)
+
+atrCur  = ta.atr(atrLen)
+atrDay  = request.security(syminfo.tickerid, "D", ta.atr(atrLen))
+atrBase = ta.sma(atrDay, atrMeanLen)
+atrRatio = atrDay / nz(atrBase, atrDay)
+
+crossEv = (ta.crossover(close, sessVwap) or ta.crossunder(close, sessVwap)) ? 1 : 0
+crossCount = math.sum(crossEv, crossWin)
+var float sessOpenB = na
+if newSession
+    sessOpenB := open
+dispNorm = math.abs(close - nz(sessOpenB, open)) / nz(atrCur, 1)
+
+scoreVol  = (atrRatio - 1.0) * 2.0
+scoreDisp = math.min(dispNorm, 3.0) / 1.5
+scoreChop = -math.min(crossCount, 20) / 10.0
+regimeScore = scoreVol + scoreDisp + scoreChop
+regimeNeg = regimeScore > 0.8
+regimePos = regimeScore < -0.4
+regimeTxt = regimeNeg ? "NEGATIVE GAMMA (trend)" : regimePos ? "POSITIVE GAMMA (mean revert)" : "TRANSITION"
+regimeCol = regimeNeg ? color.new(color.red, 0) : regimePos ? color.new(color.green, 0) : color.new(color.yellow, 0)
+
+var table regTbl = table.new(position.top_right, 1, 3, border_width=1)
+if modB and showRegime and barstate.islast
+    table.cell(regTbl, 0, 0, "Moon Dev Regime", bgcolor=color.new(color.black, 70), text_color=color.white, text_size=size.normal)
+    table.cell(regTbl, 0, 1, regimeTxt, bgcolor=regimeCol, text_color=color.white, text_size=size.large)
+    table.cell(regTbl, 0, 2, "score: " + str.tostring(regimeScore, "#.##") + "  ATRr: " + str.tostring(atrRatio, "#.##") + "  Xs: " + str.tostring(crossCount), bgcolor=color.new(color.black, 70), text_color=color.white)
+
+var string lastRegime = ""
+regimeChanged = regimeTxt != lastRegime and bar_index > 5
+if modB and regimeChanged
+    label.new(bar_index, high, "Moon Dev -> " + regimeTxt, style=label.style_label_down, color=regimeCol, textcolor=color.white, size=size.small)
+    lastRegime := regimeTxt
+
+magnetNum = math.sum(tp * nz(volume, 1), magnetLen)
+magnetDen = math.sum(nz(volume, 1), magnetLen)
+magnet = magnetDen > 0 ? magnetNum / magnetDen : close
+plot(modB and showMagnet ? magnet : na, "Pivot Magnet", color=color.new(color.orange, 0), linewidth=3)
+
+isRthB = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+minsFromOpen = math.floor((time - time("D", "0930-1600", "America/New_York")) / 60000)
+inPinWindow  = isRthB and minsFromOpen >= (390 - pinMinutes)
+bgcolor(modB and showPin and inPinWindow ? color.new(color.purple, 88) : na, title="Pin Window")
+
+pinHi = sessVwap + pinMult * atrDay
+pinLo = sessVwap - pinMult * atrDay
+plot(modB and showPin and inPinWindow ? pinHi : na, "Pin Hi", color=color.new(color.purple, 20), linewidth=2)
+plot(modB and showPin and inPinWindow ? pinLo : na, "Pin Lo", color=color.new(color.purple, 20), linewidth=2)
+
+priorClose = request.security(syminfo.tickerid, "D", close[1], lookahead=barmerge.lookahead_on)
+plot(modB ? priorClose : na, "Prior Settle", color=color.new(color.white, 0), style=plot.style_circles, linewidth=2)
+
+// =============================================================
+// MODULE C: LIQUIDITY SWEEPS + CVD + POWER HOUR
+// =============================================================
+grpC = "C) Sweeps / CVD"
+pivLen    = input.int(5, "Pivot lookback",            minval=2, group=grpC)
+swpWin    = input.int(3, "Sweep window (bars)",       minval=1, maxval=10, group=grpC)
+maxSweeps = input.int(20, "Max active sweep lines",   minval=1, maxval=200, group=grpC)
+phMins    = input.int(60, "Power hour (mins)",        minval=10, maxval=180, group=grpC)
+phColor   = input.color(color.new(color.orange, 88), "Power hour shade", group=grpC)
+showCVD   = input.bool(true, "Show CVD pane",         group=grpC)
+cvdFastL  = input.int(9,  "CVD fast EMA",             group=grpC)
+cvdSlowL  = input.int(21, "CVD slow EMA",             group=grpC)
+divLB     = input.int(20, "Divergence lookback",      group=grpC)
+showMagn  = input.bool(true, "Show round-strike magnets", group=grpC)
+
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow (low,  pivLen, pivLen)
+
+var float[] sH = array.new_float()
+var float[] sL = array.new_float()
+var int[]   sHi = array.new_int()
+var int[]   sLi = array.new_int()
+if not na(ph)
+    array.push(sH, ph)
+    array.push(sHi, bar_index - pivLen)
+    if array.size(sH) > 50
+        array.shift(sH)
+        array.shift(sHi)
+if not na(pl)
+    array.push(sL, pl)
+    array.push(sLi, bar_index - pivLen)
+    if array.size(sL) > 50
+        array.shift(sL)
+        array.shift(sLi)
+
+var line[]  swLines  = array.new_line()
+var label[] swLabels = array.new_label()
+var float[] swLevels = array.new_float()
+var bool[]  swIsHi   = array.new_bool()
+
+sweepHi = false
+sweepLo = false
+
+if modC and array.size(sH) > 0
+    lvl = array.get(sH, array.size(sH)-1)
+    idx = array.get(sHi, array.size(sHi)-1)
+    if bar_index - idx <= swpWin + pivLen and ta.highest(high, swpWin) > lvl and close < lvl
+        dup = false
+        if array.size(swLevels) > 0
+            for i = 0 to array.size(swLevels)-1
+                if math.abs(array.get(swLevels, i) - lvl) < syminfo.mintick * 4
+                    dup := true
+                    break
+        if not dup
+            sweepHi := true
+            ln = line.new(bar_index, lvl, bar_index+1, lvl, extend=extend.right, color=color.red, width=2)
+            lb = label.new(bar_index, lvl, "Moon Dev SWEEP HIGH " + str.tostring(lvl, format.mintick),
+                           style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+            array.push(swLines, ln)
+            array.push(swLabels, lb)
+            array.push(swLevels, lvl)
+            array.push(swIsHi, true)
+
+if modC and array.size(sL) > 0
+    lvl = array.get(sL, array.size(sL)-1)
+    idx = array.get(sLi, array.size(sLi)-1)
+    if bar_index - idx <= swpWin + pivLen and ta.lowest(low, swpWin) < lvl and close > lvl
+        dup = false
+        if array.size(swLevels) > 0
+            for i = 0 to array.size(swLevels)-1
+                if math.abs(array.get(swLevels, i) - lvl) < syminfo.mintick * 4
+                    dup := true
+                    break
+        if not dup
+            sweepLo := true
+            ln = line.new(bar_index, lvl, bar_index+1, lvl, extend=extend.right, color=color.lime, width=2)
+            lb = label.new(bar_index, lvl, "Moon Dev SWEEP LOW " + str.tostring(lvl, format.mintick),
+                           style=label.style_label_up, color=color.new(color.green, 20), textcolor=color.white, size=size.small)
+            array.push(swLines, ln)
+            array.push(swLabels, lb)
+            array.push(swLevels, lvl)
+            array.push(swIsHi, false)
+
+if array.size(swLines) > maxSweeps
+    line.delete(array.shift(swLines))
+    label.delete(array.shift(swLabels))
+    array.shift(swLevels)
+    array.shift(swIsHi)
+
+if array.size(swLevels) > 0
+    i = 0
+    while i < array.size(swLevels)
+        lvl = array.get(swLevels, i)
+        isH = array.get(swIsHi, i)
+        broke = (isH and close > lvl) or (not isH and close < lvl)
+        if broke
+            line.delete(array.get(swLines, i))
+            label.delete(array.get(swLabels, i))
+            array.remove(swLines, i)
+            array.remove(swLabels, i)
+            array.remove(swLevels, i)
+            array.remove(swIsHi, i)
+        else
+            i += 1
+
+magnetUp   = math.ceil (close / stepMajor) * stepMajor
+magnetDown = math.floor(close / stepMajor) * stepMajor
+plot(modC and showMagn ? magnetUp   : na, "Magnet Up",   color=color.new(color.yellow, 0), style=plot.style_circles, linewidth=1)
+plot(modC and showMagn ? magnetDown : na, "Magnet Down", color=color.new(color.aqua,   0), style=plot.style_circles, linewidth=1)
+
+isRTHc  = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+phStart = timestamp("America/New_York", year, month, dayofmonth, 16, 0) - phMins * 60 * 1000
+inPH    = isRTHc and time >= phStart and time <= timestamp("America/New_York", year, month, dayofmonth, 16, 0)
+bgcolor(modC and inPH ? phColor : na, title="Power Hour")
+
+barDelta = (close - open) * volume
+var float cvd = 0.0
+cvd := cvd + barDelta
+cvdFast = ta.ema(cvd, cvdFastL)
+cvdSlow = ta.ema(cvd, cvdSlowL)
+plot(modC and showCVD ? cvd     : na, "CVD",      color=color.new(color.white, 0), display=display.pane)
+plot(modC and showCVD ? cvdFast : na, "CVD Fast", color=color.new(color.aqua,  0), display=display.pane)
+plot(modC and showCVD ? cvdSlow : na, "CVD Slow", color=color.new(color.fuchsia,0), display=display.pane)
+
+priceHH = high >= ta.highest(high, divLB)[1]
+priceLL = low  <= ta.lowest (low,  divLB)[1]
+cvdHH   = cvd  >= ta.highest(cvd,  divLB)[1]
+cvdLL   = cvd  <= ta.lowest (cvd,  divLB)[1]
+bearDiv = priceHH and not cvdHH
+bullDiv = priceLL and not cvdLL
+plotshape(modC and bearDiv, title="Bear CVD Div", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.tiny)
+plotshape(modC and bullDiv, title="Bull CVD Div", style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.tiny)
+
+// =============================================================
+// ALERTS (one set per module)
+// =============================================================
+alertcondition(modA and bullTrap,        title="A: Bull Trap",      message="Moon Dev: BULL TRAP at call wall")
+alertcondition(modA and bearTrap,        title="A: Bear Trap",      message="Moon Dev: BEAR TRAP at put wall")
+alertcondition(modA and gammaFlipUp,     title="A: Gamma Flip Up",  message="Moon Dev: gamma flip UP (above VWAP)")
+alertcondition(modA and gammaFlipDown,   title="A: Gamma Flip Dn",  message="Moon Dev: gamma flip DOWN (below VWAP)")
+alertcondition(modB and regimeChanged,   title="B: Regime Change",  message="Moon Dev: regime flipped")
+alertcondition(modC and sweepHi,         title="C: Sweep High",     message="Moon Dev: SWEEP HIGH detected")
+alertcondition(modC and sweepLo,         title="C: Sweep Low",      message="Moon Dev: SWEEP LOW detected")
+alertcondition(modC and bearDiv,         title="C: CVD Bear Div",   message="Moon Dev: bearish CVD divergence")
+alertcondition(modC and bullDiv,         title="C: CVD Bull Div",   message="Moon Dev: bullish CVD divergence")

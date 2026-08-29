@@ -1,0 +1,120 @@
+//@version=5
+// 🌙 Moon Dev's Rainbow MA Ribbon — 10 / 20 / 30 / 40 / 50
+//
+// Five moving averages, five colors, stacked like a heat map of trend.
+// The design work is in the layering:
+//   1. a wide translucent GLOW under each line, so the ribbon reads as light
+//   2. the crisp line on top of its own glow
+//   3. a soft gradient FILL between neighbouring bands
+//   4. the whole background tints when all five stack in order
+//
+// Read it like this:
+//   fanned out + in order   -> strong trend, ribbon is wide
+//   tangled / flat          -> chop, stay out
+//   squeezed then fanning   -> the move is starting
+//
+// Built by Moon Dev 🌙
+indicator("🌙 Moon Dev Rainbow MA Ribbon 10-50", shorttitle="MD RIBBON", overlay=true)
+
+// ---------------- inputs ----------------
+maType = input.string("EMA", "MA type", options=["EMA", "SMA", "WMA", "HMA"], group="Ribbon")
+src    = input.source(close, "Source", group="Ribbon")
+
+len1 = input.int(10, "Fastest", minval=1, group="Lengths")
+len2 = input.int(20, "  ", minval=1, group="Lengths")
+len3 = input.int(30, "  ", minval=1, group="Lengths")
+len4 = input.int(40, "  ", minval=1, group="Lengths")
+len5 = input.int(50, "Slowest", minval=1, group="Lengths")
+
+// Hot -> cold. Fast MA runs hot, slow MA runs cold, so the eye reads speed as heat.
+c1 = input.color(#FF2E63, "10", inline="c", group="Colors")
+c2 = input.color(#FF8A3D, "20", inline="c", group="Colors")
+c3 = input.color(#FFD23F, "30", inline="c", group="Colors")
+c4 = input.color(#2EC4B6, "40", inline="c", group="Colors")
+c5 = input.color(#4D7CFE, "50", inline="c", group="Colors")
+
+useGlow  = input.bool(true,  "Glow under each line",        group="Style")
+useFill  = input.bool(true,  "Gradient fill between bands", group="Style")
+useTint  = input.bool(true,  "Tint background when stacked",group="Style")
+useMarks = input.bool(true,  "Mark stack flips",            group="Style")
+showInfo = input.bool(true,  "Show the readout table",      group="Style")
+
+// ---------------- the ribbon ----------------
+f_ma(series float s, simple int len) =>
+    switch maType
+        "SMA" => ta.sma(s, len)
+        "WMA" => ta.wma(s, len)
+        "HMA" => ta.hma(s, len)
+        => ta.ema(s, len)
+
+m1 = f_ma(src, len1)
+m2 = f_ma(src, len2)
+m3 = f_ma(src, len3)
+m4 = f_ma(src, len4)
+m5 = f_ma(src, len5)
+
+// Layer 1: the glow. Wide and very transparent, drawn first so it sits under.
+plot(m1, "glow 10", color=useGlow ? color.new(c1, 74) : na, linewidth=7)
+plot(m2, "glow 20", color=useGlow ? color.new(c2, 74) : na, linewidth=7)
+plot(m3, "glow 30", color=useGlow ? color.new(c3, 74) : na, linewidth=7)
+plot(m4, "glow 40", color=useGlow ? color.new(c4, 74) : na, linewidth=7)
+plot(m5, "glow 50", color=useGlow ? color.new(c5, 74) : na, linewidth=7)
+
+// Layer 2: the crisp lines.
+p1 = plot(m1, "MA 10", color=c1, linewidth=2)
+p2 = plot(m2, "MA 20", color=c2, linewidth=2)
+p3 = plot(m3, "MA 30", color=c3, linewidth=2)
+p4 = plot(m4, "MA 40", color=c4, linewidth=2)
+p5 = plot(m5, "MA 50", color=c5, linewidth=2)
+
+// Layer 3: soft fills between neighbours, tinted by the faster of the pair.
+fill(p1, p2, color=useFill ? color.new(c1, 86) : na, title="10-20")
+fill(p2, p3, color=useFill ? color.new(c2, 87) : na, title="20-30")
+fill(p3, p4, color=useFill ? color.new(c3, 88) : na, title="30-40")
+fill(p4, p5, color=useFill ? color.new(c4, 89) : na, title="40-50")
+
+// ---------------- ribbon state ----------------
+bull = m1 > m2 and m2 > m3 and m3 > m4 and m4 > m5
+bear = m1 < m2 and m2 < m3 and m3 < m4 and m4 < m5
+
+// How wide the ribbon is, as a % of price. Wide = trending, tight = coiled.
+hi     = math.max(m1, m2, m3, m4, m5)
+lo     = math.min(m1, m2, m3, m4, m5)
+spread = close != 0 ? (hi - lo) / close * 100 : 0.0
+tight  = ta.percentrank(spread, 100) < 15   // bottom 15% of the last 100 bars
+
+state = bull ? "STACKED UP" : bear ? "STACKED DOWN" : tight ? "COILED" : "TANGLED"
+stateC = bull ? c4 : bear ? c1 : tight ? c3 : color.gray
+
+// Layer 4: background tint only when all five agree.
+bgcolor(useTint ? (bull ? color.new(c4, 93) : bear ? color.new(c1, 93) : na) : na, title="stack tint")
+
+// Mark the bar where the stack completes — that's the signal, not the cross.
+flipUp = bull and not bull[1]
+flipDn = bear and not bear[1]
+plotshape(useMarks and flipUp, "stack UP",   style=shape.triangleup,   location=location.belowbar, color=c4, size=size.tiny)
+plotshape(useMarks and flipDn, "stack DOWN", style=shape.triangledown, location=location.abovebar, color=c1, size=size.tiny)
+
+// ---------------- readout ----------------
+// Pine will not let a function be declared inside an `if`, so it lives here. 🌙
+f_row(t, r, label, col, val) =>
+    table.cell(t, 0, r, label, text_color=col,         bgcolor=color.new(color.black, 25), text_size=size.small)
+    table.cell(t, 1, r, val,   text_color=color.white, bgcolor=color.new(color.black, 25), text_size=size.small)
+
+var table md = table.new(position.top_right, 2, 7, border_width=1, frame_width=1)
+
+if showInfo and barstate.islast
+    table.cell(md, 0, 0, "🌙 Moon Dev", text_color=color.white, bgcolor=color.new(#4D7CFE, 15), text_size=size.small)
+    table.cell(md, 1, 0, maType,        text_color=color.white, bgcolor=color.new(#4D7CFE, 15), text_size=size.small)
+    f_row(md, 1, "MA " + str.tostring(len1), c1, str.tostring(m1, format.mintick))
+    f_row(md, 2, "MA " + str.tostring(len2), c2, str.tostring(m2, format.mintick))
+    f_row(md, 3, "MA " + str.tostring(len3), c3, str.tostring(m3, format.mintick))
+    f_row(md, 4, "MA " + str.tostring(len4), c4, str.tostring(m4, format.mintick))
+    f_row(md, 5, "MA " + str.tostring(len5), c5, str.tostring(m5, format.mintick))
+    table.cell(md, 0, 6, state, text_color=color.black, bgcolor=stateC, text_size=size.small)
+    table.cell(md, 1, 6, str.tostring(spread, "#.##") + "%", text_color=color.black, bgcolor=stateC, text_size=size.small)
+
+// ---------------- alerts ----------------
+alertcondition(flipUp, title="🌙 Ribbon stacked UP",   message="Moon Dev: MA ribbon stacked bullish 10>20>30>40>50")
+alertcondition(flipDn, title="🌙 Ribbon stacked DOWN", message="Moon Dev: MA ribbon stacked bearish 10<20<30<40<50")
+alertcondition(tight and not tight[1], title="🌙 Ribbon coiled", message="Moon Dev: MA ribbon squeezed, move may be near")

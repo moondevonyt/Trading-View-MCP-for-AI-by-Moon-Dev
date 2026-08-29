@@ -1,0 +1,93 @@
+//@version=6
+// 🌙 Moon Dev's SMA Ribbon 20/40
+// Dual SMA indicator with a cosmic gradient fill between the 20 and 40.
+// Fill shifts color based on trend regime, distance between MAs, and slope.
+// Built by Moon Dev 🌙 — fun to look at, easy to read.
+indicator("Moon Dev SMA Ribbon 20/40", shorttitle="🌙 SMA 20/40", overlay=true)
+
+// --- INPUTS ----------------------------------------------------------------
+GRP_MA  = "Moving Averages"
+GRP_VIS = "Cosmic Visuals"
+
+fastLen   = input.int(20,  "Fast SMA Length",  2,   200, group=GRP_MA)
+slowLen   = input.int(40,  "Slow SMA Length",  5,   400, group=GRP_MA)
+src       = input.source(close, "Source", group=GRP_MA)
+
+showGlow    = input.bool(true, "Moon Dev Glow Layer",     group=GRP_VIS)
+showBands   = input.bool(true, "Gradient Bands Between",  group=GRP_VIS, tooltip="Extra plots between the two SMAs for that cosmic gradient look")
+showMarkers = input.bool(true, "Cross Markers",           group=GRP_VIS)
+showBg      = input.bool(true, "Regime Background Tint",  group=GRP_VIS)
+bandCount   = input.int(6,  "Gradient Bands",  2, 10, group=GRP_VIS)
+fillAlpha   = input.int(70, "Fill Transparency", 0, 95, group=GRP_VIS)
+
+// --- COSMIC PALETTE --------------------------------------------------------
+cBull   = color.rgb(0,   230, 118)   // neon green
+cBear   = color.rgb(255,  82,  82)   // hot red
+cNeon   = color.rgb(255,  64, 196)   // fuchsia
+cCosmic = color.rgb(170, 120, 255)   // purple
+cSun    = color.rgb(255, 221,  87)   // yellow
+cCyan   = color.rgb(64,  224, 208)   // turquoise
+cWhite  = color.rgb(240, 240, 255)
+
+// --- CORE MATH -------------------------------------------------------------
+smaFast = ta.sma(src, fastLen)
+smaSlow = ta.sma(src, slowLen)
+
+bullRegime = smaFast > smaSlow
+slopeFast  = smaFast - smaFast[3]
+slopeSlow  = smaSlow - smaSlow[3]
+strongTrend = bullRegime ? (slopeFast > 0 and slopeSlow > 0) : (slopeFast < 0 and slopeSlow < 0)
+
+// Distance between the two SMAs, normalized for color weighting
+spread     = math.abs(smaFast - smaSlow)
+spreadAvg  = ta.sma(spread, 50)
+spreadHot  = spreadAvg > 0 ? math.min(spread / spreadAvg, 3.0) : 0.0
+
+// --- PLOTS: SMAs -----------------------------------------------------------
+// Glow layer (fat + transparent) — gives Moon Dev cosmic halo
+plot(showGlow ? smaFast : na, "Fast Glow", color=color.new(cCyan, 70), linewidth=6, editable=false)
+plot(showGlow ? smaSlow : na, "Slow Glow", color=color.new(cCosmic, 70), linewidth=6, editable=false)
+
+// Primary SMA lines
+pFast = plot(smaFast, "SMA 20", color=cCyan,   linewidth=2)
+pSlow = plot(smaSlow, "SMA 40", color=cCosmic, linewidth=2)
+
+// --- GRADIENT FILL BETWEEN ------------------------------------------------
+// Pick a color based on regime + trend strength
+baseCol = bullRegime ? (strongTrend ? cBull : cSun) : (strongTrend ? cBear : cNeon)
+
+// Intensify fill when MAs spread apart (stronger trend = louder color)
+alphaMain = math.max(20, fillAlpha - int(spreadHot * 15))
+fill(pFast, pSlow, color=color.new(baseCol, alphaMain), title="Ribbon Fill")
+
+// Extra gradient bands — interpolate between fast & slow for a rainbow stripe.
+// Pine v6 disallows plot() in local scope, so the bands are declared at global
+// scope (9 fixed stripes at t=0.1..0.9). Moon Dev 🌙.
+bandAlpha = math.min(95, fillAlpha + 15)
+bandColAt(float t) => bullRegime ? color.from_gradient(t, 0, 1, cCyan, cBull) : color.from_gradient(t, 0, 1, cNeon, cBear)
+
+plot(showBands ? smaFast * 0.90 + smaSlow * 0.10 : na, title="Moon Dev Band 1", color=color.new(bandColAt(0.10), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+plot(showBands ? smaFast * 0.80 + smaSlow * 0.20 : na, title="Moon Dev Band 2", color=color.new(bandColAt(0.20), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+plot(showBands ? smaFast * 0.70 + smaSlow * 0.30 : na, title="Moon Dev Band 3", color=color.new(bandColAt(0.30), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+plot(showBands ? smaFast * 0.60 + smaSlow * 0.40 : na, title="Moon Dev Band 4", color=color.new(bandColAt(0.40), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+plot(showBands ? smaFast * 0.50 + smaSlow * 0.50 : na, title="Moon Dev Band 5", color=color.new(bandColAt(0.50), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+plot(showBands ? smaFast * 0.40 + smaSlow * 0.60 : na, title="Moon Dev Band 6", color=color.new(bandColAt(0.60), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+plot(showBands ? smaFast * 0.30 + smaSlow * 0.70 : na, title="Moon Dev Band 7", color=color.new(bandColAt(0.70), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+plot(showBands ? smaFast * 0.20 + smaSlow * 0.80 : na, title="Moon Dev Band 8", color=color.new(bandColAt(0.80), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+plot(showBands ? smaFast * 0.10 + smaSlow * 0.90 : na, title="Moon Dev Band 9", color=color.new(bandColAt(0.90), bandAlpha), style=plot.style_circles, linewidth=1, editable=false)
+
+// --- CROSS MARKERS ---------------------------------------------------------
+bullCross = ta.crossover(smaFast, smaSlow)
+bearCross = ta.crossunder(smaFast, smaSlow)
+
+plotshape(showMarkers and bullCross, title="🌙 Bull Cross 20>40", style=shape.labelup,   location=location.belowbar, color=cBull, textcolor=color.white, text="🌙", size=size.small)
+plotshape(showMarkers and bearCross, title="🌙 Bear Cross 20<40", style=shape.labeldown, location=location.abovebar, color=cBear, textcolor=color.white, text="☄️", size=size.small)
+
+// --- REGIME BACKGROUND TINT ------------------------------------------------
+bgTint = bullRegime ? (strongTrend ? color.new(cBull, 94) : color.new(cSun, 95)) :
+                      (strongTrend ? color.new(cBear, 94) : color.new(cNeon, 95))
+bgcolor(showBg ? bgTint : na, title="Moon Dev Regime Tint")
+
+// --- ALERTS ----------------------------------------------------------------
+alertcondition(bullCross, title="🌙 SMA 20/40 Bull Cross", message="🌙 Moon Dev SMA Ribbon: 20 crossed ABOVE 40 — bullish regime")
+alertcondition(bearCross, title="🌙 SMA 20/40 Bear Cross", message="🌙 Moon Dev SMA Ribbon: 20 crossed BELOW 40 — bearish regime")

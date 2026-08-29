@@ -1,0 +1,61 @@
+//@version=5
+// Moon Dev VWAP x ADX Explosion
+// VWAP colored by trend strength, volatility envelope tinted by direction,
+// explosion markers when ADX rockets in the direction of +DI or -DI.
+indicator("Moon Dev VWAP x ADX Explosion", overlay=true, shorttitle="MD VWAPxADX")
+
+adxLen    = input.int(14,  "ADX Length",          minval=1)
+adxSmooth = input.int(14,  "ADX Smoothing",       minval=1)
+adxStrong = input.int(25,  "ADX Strong Level",    minval=10)
+adxHot    = input.int(40,  "ADX Explosion Level", minval=20)
+devMult   = input.float(2.0, "VWAP Band StdDevs", minval=0.5, step=0.1)
+
+src       = hlc3
+vwapVal   = ta.vwap(src)
+dev       = ta.stdev(src - vwapVal, 50)
+upperBand = vwapVal + dev * devMult
+lowerBand = vwapVal - dev * devMult
+
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxSmooth)
+
+cCold    = color.new(color.aqua,    55)
+cWarm    = color.new(color.yellow,  35)
+cHot     = color.new(color.orange,  15)
+cNuclear = color.new(color.fuchsia,  0)
+
+vwapCol = cCold
+if adxVal >= adxStrong
+    vwapCol := cWarm
+if adxVal >= adxHot
+    vwapCol := cHot
+if adxVal >= adxHot + 15
+    vwapCol := cNuclear
+
+bullish = diPlus > diMinus
+envTint = bullish ? color.new(color.lime, 82) : color.new(color.red, 82)
+
+pVwap  = plot(vwapVal,   "VWAP",        color=vwapCol,                   linewidth=3)
+pUpper = plot(upperBand, "Upper Band",  color=color.new(color.purple, 60))
+pLower = plot(lowerBand, "Lower Band",  color=color.new(color.purple, 60))
+fill(pUpper, pLower, color=envTint, title="VWAP Envelope")
+
+explosion = adxVal > adxHot and adxVal > adxVal[1]
+plotshape(explosion and  bullish, title="Bull Explosion", style=shape.triangleup,   location=location.belowbar, color=color.lime, size=size.small)
+plotshape(explosion and not bullish, title="Bear Explosion", style=shape.triangledown, location=location.abovebar, color=color.red,  size=size.small)
+
+stateText = "chop"
+stateCol  = color.gray
+if adxVal >= adxStrong
+    stateText := "strong"
+    stateCol  := color.orange
+if adxVal >= adxHot
+    stateText := "EXPLOSION"
+    stateCol  := color.fuchsia
+
+var label adxLbl = na
+label.delete(adxLbl)
+if barstate.islast
+    adxLbl := label.new(bar_index, high, stateText + " ADX " + str.tostring(adxVal, "#.#"), color=stateCol, textcolor=color.white, style=label.style_label_down, size=size.normal)
+
+alertcondition(explosion and bullish,     title="Bull Explosion", message="Moon Dev: ADX explosion with +DI dominant")
+alertcondition(explosion and not bullish, title="Bear Explosion", message="Moon Dev: ADX explosion with -DI dominant")

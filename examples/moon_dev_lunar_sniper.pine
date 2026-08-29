@@ -1,0 +1,431 @@
+//@version=6
+// Moon Dev's Lunar Sniper
+// Confluence-scored signals with moon-phase grading, cosmic regime tint,
+// squeeze-bomb detector, and a fully-emoji dashboard. Inspired by
+// Precision Sniper [WillyAlgoTrader], rebuilt and Moon-ified.
+indicator("Moon Dev Lunar Sniper", shorttitle="MD Lunar", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
+
+// --- INPUTS ----------------------------------------------------------------
+GRP_ENT = "Entry Engine"
+GRP_RSK = "Risk Management"
+GRP_SQZ = "Squeeze"
+GRP_VIS = "Visuals"
+
+emaFastLen   = input.int(9,   "Fast EMA",      3,   50,  group=GRP_ENT)
+emaSlowLen   = input.int(21,  "Slow EMA",      10,  100, group=GRP_ENT)
+emaTrendLen  = input.int(55,  "Trend EMA",     20,  200, group=GRP_ENT)
+rsiLen       = input.int(14,  "RSI Length",    5,   30,  group=GRP_ENT)
+minScore     = input.int(6,   "Min Confluence", 1,  10,  group=GRP_ENT, tooltip="Signal fires only if bull/bear confluence >= this")
+htfTf        = input.timeframe("60", "HTF Bias Timeframe", group=GRP_ENT, tooltip="Higher-timeframe EMA fast/slow compared for trend bias")
+
+atrLen       = input.int(14,  "ATR Length",    5,   50,  group=GRP_RSK)
+slMult       = input.float(1.5, "SL = ATR x",  0.5, 5.0, step=0.1, group=GRP_RSK)
+tp1R         = input.float(1.0, "TP1 R:R",     0.5, 5.0, step=0.1, group=GRP_RSK)
+tp2R         = input.float(2.0, "TP2 R:R",     1.0, 8.0, step=0.1, group=GRP_RSK)
+tp3R         = input.float(3.0, "TP3 R:R",     1.5, 12.0, step=0.5, group=GRP_RSK)
+
+bbLen        = input.int(20,  "BB Length",     10,  100, group=GRP_SQZ)
+bbMult       = input.float(2.0, "BB StdDev",   1.0, 4.0, step=0.1, group=GRP_SQZ)
+sqzLookback  = input.int(50,  "Squeeze Lookback", 20, 200, group=GRP_SQZ, tooltip="Bars to compare BB width against for squeeze detection")
+
+showBg       = input.bool(true,  "Cosmic Background Tint",  group=GRP_VIS)
+showSignals  = input.bool(true,  "Show Moon Phase Signals", group=GRP_VIS)
+showSqueeze  = input.bool(true,  "Show Squeeze Bombs",      group=GRP_VIS)
+showTPSL     = input.bool(true,  "Show TP/SL Lines",        group=GRP_VIS)
+showDash     = input.bool(true,  "Show Dashboard",          group=GRP_VIS)
+showRibbon   = input.bool(true,  "Show EMA Ribbon",         group=GRP_VIS)
+showVwap     = input.bool(true,  "Show VWAP",               group=GRP_VIS)
+labelOffset  = input.int(22,    "Label Offset (bars)", 5, 60, group=GRP_VIS)
+
+// --- COSMIC PALETTE --------------------------------------------------------
+cBull   = color.rgb(0,   230, 118)   // neon green
+cBear   = color.rgb(255,  82,  82)   // hot red
+cNeon   = color.rgb(255,  64, 196)   // fuchsia
+cCosmic = color.rgb(170, 120, 255)   // purple
+cSun    = color.rgb(255, 221,  87)   // yellow
+cCyan   = color.rgb(64,  224, 208)   // turquoise
+cChop   = color.rgb(120, 140, 170)   // slate
+cWhite  = color.rgb(240, 240, 255)
+
+// --- CORE MATH -------------------------------------------------------------
+src = close
+emaFast  = ta.ema(src, emaFastLen)
+emaSlow  = ta.ema(src, emaSlowLen)
+emaTrend = ta.ema(src, emaTrendLen)
+atrVal   = ta.atr(atrLen)
+rsiVal   = ta.rsi(src, rsiLen)
+[macdLine, signalLine, histLine] = ta.macd(src, 12, 26, 9)
+vwapVal  = ta.vwap(hlc3)
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+volAvg   = ta.sma(volume, 20)
+
+bbBasis    = ta.sma(src, bbLen)
+bbDev      = bbMult * ta.stdev(src, bbLen)
+bbUpper    = bbBasis + bbDev
+bbLower    = bbBasis - bbDev
+bbWidth    = (bbUpper - bbLower) / bbBasis
+bbWidthMin = ta.lowest(bbWidth, sqzLookback)
+squeeze    = bbWidth <= bbWidthMin * 1.05
+
+// HTF bias (non-repainting via [1])
+htfFast = request.security(syminfo.tickerid, htfTf, ta.ema(src, emaFastLen)[1], barmerge.gaps_off, barmerge.lookahead_on)
+htfSlow = request.security(syminfo.tickerid, htfTf, ta.ema(src, emaSlowLen)[1], barmerge.gaps_off, barmerge.lookahead_on)
+htfBias = nz(htfFast) > nz(htfSlow) ? 1 : nz(htfFast) < nz(htfSlow) ? -1 : 0
+
+// --- CONFLUENCE SCORING (0-10) --------------------------------------------
+float bullScore = 0.0
+bullScore += emaFast > emaSlow                         ? 1.0 : 0.0
+bullScore += close   > emaTrend                        ? 1.0 : 0.0
+bullScore += rsiVal  > 50 and rsiVal < 75              ? 1.0 : 0.0
+bullScore += histLine > 0                              ? 1.0 : 0.0
+bullScore += macdLine > signalLine                     ? 1.0 : 0.0
+bullScore += close   > vwapVal                         ? 1.0 : 0.0
+bullScore += volume  > volAvg * 1.2                    ? 1.0 : 0.0
+bullScore += adxVal  > 20 and diPlus > diMinus         ? 1.0 : 0.0
+bullScore += htfBias == 1                              ? 1.0 : 0.0
+bullScore += squeeze and close > bbBasis               ? 1.0 : 0.0
+
+float bearScore = 0.0
+bearScore += emaFast < emaSlow                         ? 1.0 : 0.0
+bearScore += close   < emaTrend                        ? 1.0 : 0.0
+bearScore += rsiVal  < 50 and rsiVal > 25              ? 1.0 : 0.0
+bearScore += histLine < 0                              ? 1.0 : 0.0
+bearScore += macdLine < signalLine                     ? 1.0 : 0.0
+bearScore += close   < vwapVal                         ? 1.0 : 0.0
+bearScore += volume  > volAvg * 1.2                    ? 1.0 : 0.0
+bearScore += adxVal  > 20 and diMinus > diPlus         ? 1.0 : 0.0
+bearScore += htfBias == -1                             ? 1.0 : 0.0
+bearScore += squeeze and close < bbBasis               ? 1.0 : 0.0
+
+// --- MOON PHASE GRADING ----------------------------------------------------
+moonPhase(float s) =>
+    s >= 9 ? "🌕" : s >= 7 ? "🌔" : s >= 5 ? "🌓" : s >= 3 ? "🌘" : "🌑"
+
+gradeName(float s) =>
+    s >= 9 ? "FULL MOON" : s >= 7 ? "GIBBOUS" : s >= 5 ? "HALF" : s >= 3 ? "CRESCENT" : "NEW MOON"
+
+// --- SIGNAL TRIGGERS -------------------------------------------------------
+emaBullCross = ta.crossover(emaFast,  emaSlow)
+emaBearCross = ta.crossunder(emaFast, emaSlow)
+
+rawBuy  = emaBullCross and bullScore >= minScore and rsiVal < 75
+rawSell = emaBearCross and bearScore >= minScore and rsiVal > 25
+
+var int lastDir = 0
+confirmedBuy  = rawBuy  and lastDir !=  1 and barstate.isconfirmed
+confirmedSell = rawSell and lastDir != -1 and barstate.isconfirmed
+
+if confirmedBuy
+    lastDir := 1
+if confirmedSell
+    lastDir := -1
+
+// --- TRADE MANAGEMENT ------------------------------------------------------
+var float entryPx = na
+var float slPx    = na
+var float tp1Px   = na
+var float tp2Px   = na
+var float tp3Px   = na
+var float trailPx = na
+var int   tradeDir = 0
+var bool  tp1H = false
+var bool  tp2H = false
+var bool  tp3H = false
+var bool  slH  = false
+
+if confirmedBuy
+    entryPx := close
+    tradeDir := 1
+    risk := atrVal * slMult
+    slPx  := close - risk
+    tp1Px := close + risk * tp1R
+    tp2Px := close + risk * tp2R
+    tp3Px := close + risk * tp3R
+    trailPx := slPx
+    tp1H := false
+    tp2H := false
+    tp3H := false
+    slH  := false
+
+if confirmedSell
+    entryPx := close
+    tradeDir := -1
+    risk := atrVal * slMult
+    slPx  := close + risk
+    tp1Px := close - risk * tp1R
+    tp2Px := close - risk * tp2R
+    tp3Px := close - risk * tp3R
+    trailPx := slPx
+    tp1H := false
+    tp2H := false
+    tp3H := false
+    slH  := false
+
+// TP/SL detection for active trades
+if tradeDir == 1 and not slH
+    if high >= tp1Px and not tp1H
+        tp1H := true
+        trailPx := entryPx
+    if high >= tp2Px and not tp2H
+        tp2H := true
+        trailPx := tp1Px
+    if high >= tp3Px and not tp3H
+        tp3H := true
+        trailPx := tp2Px
+    if low <= trailPx
+        slH := true
+if tradeDir == -1 and not slH
+    if low <= tp1Px and not tp1H
+        tp1H := true
+        trailPx := entryPx
+    if low <= tp2Px and not tp2H
+        tp2H := true
+        trailPx := tp1Px
+    if low <= tp3Px and not tp3H
+        tp3H := true
+        trailPx := tp2Px
+    if high >= trailPx
+        slH := true
+
+// --- BACKTEST TRACKER ------------------------------------------------------
+var int   btTrades = 0
+var int   btWins   = 0
+var int   btLosses = 0
+var float btTotalR = 0.0
+var float btGrossW = 0.0
+var float btGrossL = 0.0
+var bool  slPrev   = false
+
+float closedR = 0.0
+tradeClosed = false
+if slH and not slPrev and tradeDir != 0
+    tradeClosed := true
+    if tp3H
+        closedR := tp2R
+    else if tp2H
+        closedR := tp1R
+    else if tp1H
+        closedR := 0.0
+    else
+        closedR := -1.0
+if tradeClosed
+    btTrades += 1
+    btTotalR += closedR
+    if closedR > 0
+        btWins += 1
+        btGrossW += closedR
+    else if closedR < 0
+        btLosses += 1
+        btGrossL += math.abs(closedR)
+slPrev := slH
+
+btWinRate = btTrades > 0 ? btWins * 100.0 / btTrades : 0.0
+btAvgR    = btTrades > 0 ? btTotalR / btTrades : 0.0
+btPF      = btGrossL > 0 ? btGrossW / btGrossL : (btGrossW > 0 ? 999.0 : 0.0)
+
+// --- MOOD ENGINE -----------------------------------------------------------
+mood = "🌊"
+if adxVal < 20
+    mood := "😴"
+if adxVal >= 20 and adxVal < 35
+    mood := "⚡"
+if adxVal >= 35
+    mood := "🚀"
+if squeeze
+    mood := "💣"
+
+// --- PLOTS -----------------------------------------------------------------
+pF = plot(showRibbon ? emaFast : na, "EMA Fast", color=color.new(cBull, 25), linewidth=2)
+pS = plot(showRibbon ? emaSlow : na, "EMA Slow", color=color.new(cBear, 25), linewidth=2)
+fill(pF, pS, color=emaFast > emaSlow ? color.new(cBull, 85) : color.new(cBear, 85), title="EMA Ribbon Fill")
+plot(showRibbon ? emaTrend : na, "EMA Trend", color=color.new(cCosmic, 30), linewidth=1, style=plot.style_circles)
+plot(showVwap ? vwapVal : na, "VWAP", color=color.new(cSun, 30), linewidth=2)
+plot(showSqueeze ? bbUpper : na, "BB Upper", color=color.new(cCyan, 75))
+plot(showSqueeze ? bbLower : na, "BB Lower", color=color.new(cCyan, 75))
+
+// Cosmic background tint by regime
+bgTint = color.new(cChop, 95)
+if adxVal >= 20 and adxVal < 35
+    bgTint := color.new(cSun, 94)
+if adxVal >= 35
+    bgTint := color.new(cNeon, 93)
+if squeeze
+    bgTint := color.new(cCosmic, 92)
+bgcolor(showBg ? bgTint : na, title="Cosmic Regime Tint")
+
+// Squeeze bombs below bar
+plotshape(showSqueeze and squeeze, title="Squeeze Bomb", style=shape.diamond, location=location.belowbar, color=cNeon, size=size.tiny)
+
+// Moon-phase signal labels
+if showSignals and confirmedBuy
+    string phase = moonPhase(bullScore)
+    string txt   = phase + " LONG " + str.tostring(bullScore, "#") + "/10"
+    label.new(bar_index, low, txt, color=cBull, textcolor=color.white, style=label.style_label_up, size=size.normal, yloc=yloc.belowbar)
+
+if showSignals and confirmedSell
+    string phase = moonPhase(bearScore)
+    string txt   = phase + " SHORT " + str.tostring(bearScore, "#") + "/10"
+    label.new(bar_index, high, txt, color=cBear, textcolor=color.white, style=label.style_label_down, size=size.normal, yloc=yloc.abovebar)
+
+// --- TP/SL DRAWINGS --------------------------------------------------------
+var line  lnEntry = na
+var line  lnSL    = na
+var line  lnTP1   = na
+var line  lnTP2   = na
+var line  lnTP3   = na
+var label lbEntry = na
+var label lbSL    = na
+var label lbTP1   = na
+var label lbTP2   = na
+var label lbTP3   = na
+
+if (confirmedBuy or confirmedSell) and showTPSL
+    line.delete(lnEntry)
+    line.delete(lnSL)
+    line.delete(lnTP1)
+    line.delete(lnTP2)
+    line.delete(lnTP3)
+    label.delete(lbEntry)
+    label.delete(lbSL)
+    label.delete(lbTP1)
+    label.delete(lbTP2)
+    label.delete(lbTP3)
+    endX = bar_index + labelOffset
+    labX = endX + 2
+    lnEntry := line.new(bar_index, entryPx, endX, entryPx, color=cCyan,  width=2)
+    lnSL    := line.new(bar_index, slPx,    endX, slPx,    color=cBear,  width=2)
+    lnTP1   := line.new(bar_index, tp1Px,   endX, tp1Px,   color=cBull,  width=1, style=line.style_dashed)
+    lnTP2   := line.new(bar_index, tp2Px,   endX, tp2Px,   color=cBull,  width=1, style=line.style_dashed)
+    lnTP3   := line.new(bar_index, tp3Px,   endX, tp3Px,   color=cNeon,  width=2, style=line.style_dashed)
+    lbEntry := label.new(labX, entryPx, "🎯 Entry " + str.tostring(entryPx, format.mintick), color=color.new(cCyan, 55), textcolor=color.white, style=label.style_label_left, size=size.small)
+    lbSL    := label.new(labX, slPx,    "☠️ SL "    + str.tostring(slPx,    format.mintick), color=color.new(cBear, 55), textcolor=color.white, style=label.style_label_left, size=size.small)
+    lbTP1   := label.new(labX, tp1Px,   "💎 TP1 "   + str.tostring(tp1Px,   format.mintick), color=color.new(cBull, 55), textcolor=color.white, style=label.style_label_left, size=size.small)
+    lbTP2   := label.new(labX, tp2Px,   "💎 TP2 "   + str.tostring(tp2Px,   format.mintick), color=color.new(cBull, 55), textcolor=color.white, style=label.style_label_left, size=size.small)
+    lbTP3   := label.new(labX, tp3Px,   "🚀 TP3 "   + str.tostring(tp3Px,   format.mintick), color=color.new(cNeon, 55), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+// Extend TP/SL lines every bar
+if showTPSL and not na(lnEntry) and not (confirmedBuy or confirmedSell)
+    newEnd = bar_index + labelOffset
+    newLab = newEnd + 2
+    line.set_x2(lnEntry, newEnd)
+    line.set_x2(lnSL,    newEnd)
+    line.set_x2(lnTP1,   newEnd)
+    line.set_x2(lnTP2,   newEnd)
+    line.set_x2(lnTP3,   newEnd)
+    label.set_x(lbEntry, newLab)
+    label.set_x(lbSL,    newLab)
+    label.set_x(lbTP1,   newLab)
+    label.set_x(lbTP2,   newLab)
+    label.set_x(lbTP3,   newLab)
+
+// TP hit visual update
+if showTPSL and tp1H and not na(lnTP1)
+    line.set_color(lnTP1, cCyan)
+    line.set_style(lnTP1, line.style_solid)
+    label.set_text(lbTP1, "✓ TP1 " + str.tostring(tp1Px, format.mintick))
+if showTPSL and tp2H and not na(lnTP2)
+    line.set_color(lnTP2, cCyan)
+    line.set_style(lnTP2, line.style_solid)
+    label.set_text(lbTP2, "✓ TP2 " + str.tostring(tp2Px, format.mintick))
+if showTPSL and tp3H and not na(lnTP3)
+    line.set_color(lnTP3, cSun)
+    line.set_style(lnTP3, line.style_solid)
+    label.set_text(lbTP3, "🏆 TP3 " + str.tostring(tp3Px, format.mintick))
+
+// --- DASHBOARD -------------------------------------------------------------
+var table dash = table.new(position.top_right, 2, 16, color.new(color.black, 60), color.new(cCosmic, 20), 1, color.new(cCosmic, 40), 1)
+
+if showDash and barstate.islast
+    float activeScore = tradeDir == 1 ? bullScore : tradeDir == -1 ? bearScore : math.max(bullScore, bearScore)
+    int   sInt        = int(math.floor(activeScore))
+    string phase      = moonPhase(activeScore)
+    string gname      = gradeName(activeScore)
+
+    // Confluence gauge dots
+    string gauge = ""
+    for i = 0 to 9
+        gauge := gauge + (i < sInt ? "●" : "○")
+
+    // Header
+    table.cell(dash, 0, 0, "🌙 MOON DEV LUNAR SNIPER", text_color=color.white, bgcolor=color.new(cCosmic, 0), text_size=size.small, text_halign=text.align_center)
+    table.merge_cells(dash, 0, 0, 1, 0)
+
+    // Mood + ADX
+    table.cell(dash, 0, 1, "Mood", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 1, mood + "  ADX " + str.tostring(adxVal, "#.#"), text_color=cWhite, text_size=size.small)
+
+    // Moon phase signal
+    color pCol = activeScore >= 7 ? cBull : activeScore >= 5 ? cSun : activeScore >= 3 ? cNeon : cChop
+    table.cell(dash, 0, 2, "Signal", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 2, phase + " " + gname + " " + str.tostring(activeScore, "#.#") + "/10", text_color=pCol, text_size=size.small)
+
+    // Confluence gauge
+    table.cell(dash, 0, 3, "Gauge", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 3, gauge, text_color=cNeon, text_size=size.small)
+
+    // Trend
+    string trendStr = emaFast > emaSlow and close > emaTrend ? "🟢 Bullish" : emaFast < emaSlow and close < emaTrend ? "🔴 Bearish" : "⚪ Mixed"
+    table.cell(dash, 0, 4, "Trend", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 4, trendStr, text_color=cWhite, text_size=size.small)
+
+    // HTF bias
+    string htfStr = htfBias == 1 ? "🟢 Bull" : htfBias == -1 ? "🔴 Bear" : "⚪ Neutral"
+    table.cell(dash, 0, 5, "HTF " + htfTf, text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 5, htfStr, text_color=cWhite, text_size=size.small)
+
+    // RSI
+    color rsiCol = rsiVal > 70 ? cBear : rsiVal < 30 ? cBull : cWhite
+    table.cell(dash, 0, 6, "RSI", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 6, str.tostring(rsiVal, "#.0"), text_color=rsiCol, text_size=size.small)
+
+    // VWAP delta
+    float vwapDev = vwapVal != 0 ? (close - vwapVal) / vwapVal * 100.0 : 0.0
+    table.cell(dash, 0, 7, "VWAP Δ", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 7, str.tostring(vwapDev, "#.##") + "%", text_color=vwapDev > 0 ? cBull : cBear, text_size=size.small)
+
+    // Squeeze
+    string sqzStr = squeeze ? "💣 COILED" : "🌊 Loose"
+    table.cell(dash, 0, 8, "Squeeze", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 8, sqzStr, text_color=squeeze ? cNeon : cWhite, text_size=size.small)
+
+    // Trade status
+    string trStatus = tradeDir == 0 ? "⏸ no trade" : slH ? "☠️ stopped" : tp3H ? "🚀 TP3 hit" : tp2H ? "💎 TP2" : tp1H ? "🎯 TP1" : (tradeDir == 1 ? "🔫 long loaded" : "🔫 short loaded")
+    table.cell(dash, 0, 9, "Trade", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 9, trStatus, text_color=cWhite, text_size=size.small)
+
+    // Symbol / TF
+    table.cell(dash, 0, 10, "Chart", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 10, syminfo.ticker + "  " + timeframe.period, text_color=cWhite, text_size=size.small)
+
+    // Backtest divider
+    table.cell(dash, 0, 11, "📈 BACKTEST", text_color=color.white, bgcolor=color.new(cNeon, 0), text_size=size.small, text_halign=text.align_center)
+    table.merge_cells(dash, 0, 11, 1, 11)
+
+    // Trades
+    table.cell(dash, 0, 12, "Trades", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 12, str.tostring(btTrades) + "  (" + str.tostring(btWins) + "W/" + str.tostring(btLosses) + "L)", text_color=cWhite, text_size=size.small)
+
+    // Win rate
+    color wrCol = btWinRate >= 55 ? cBull : btWinRate >= 45 ? cSun : cBear
+    table.cell(dash, 0, 13, "Win Rate", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 13, str.tostring(btWinRate, "#.0") + "%", text_color=btTrades > 0 ? wrCol : cChop, text_size=size.small)
+
+    // Avg R
+    color avgRCol = btAvgR > 0.5 ? cBull : btAvgR > 0 ? cSun : cBear
+    table.cell(dash, 0, 14, "Avg R", text_color=cChop, text_size=size.small)
+    table.cell(dash, 1, 14, str.tostring(btAvgR, "#.##") + "R", text_color=btTrades > 0 ? avgRCol : cChop, text_size=size.small)
+
+    // PF + Moon Dev footer
+    string pfStr = btPF >= 999 ? "∞" : str.tostring(btPF, "#.##")
+    color pfCol  = btPF >= 1.5 ? cBull : btPF >= 1.0 ? cSun : cBear
+    table.cell(dash, 0, 15, "🌙 PF", text_color=color.white, bgcolor=color.new(cCosmic, 20), text_size=size.small)
+    table.cell(dash, 1, 15, pfStr, text_color=btTrades > 0 ? pfCol : cChop, bgcolor=color.new(cCosmic, 20), text_size=size.small)
+
+// --- ALERTS ----------------------------------------------------------------
+alertcondition(confirmedBuy,  title="🌙 Lunar Sniper LONG",  message="🌙 Moon Dev Lunar Sniper: LONG signal, grade {{plot_0}}")
+alertcondition(confirmedSell, title="🌙 Lunar Sniper SHORT", message="🌙 Moon Dev Lunar Sniper: SHORT signal")
+alertcondition(tp1H and not tp1H[1], title="TP1 Hit", message="🎯 TP1 hit")
+alertcondition(tp2H and not tp2H[1], title="TP2 Hit", message="💎 TP2 hit")
+alertcondition(tp3H and not tp3H[1], title="TP3 Hit", message="🚀 TP3 hit")
+alertcondition(slH  and not slH[1],  title="SL Hit",  message="☠️ Stopped out")
+alertcondition(squeeze and not squeeze[1], title="Squeeze Bomb", message="💣 BB squeeze coiled — breakout imminent")
