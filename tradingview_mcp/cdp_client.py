@@ -58,6 +58,13 @@ class CDPClient:
         # Enable the domains we use most. Input has no .enable method.
         for domain in ("Page", "Runtime", "DOM"):
             self.send(f"{domain}.enable")
+        # 🌙 Moon Dev: About to drive this page, so give it real keyboard focus.
+        # This is the choke point every script goes through — some build a client
+        # straight from find_tradingview_tab() instead of open_tv_client().
+        # No-op on a standalone Chrome. See the control-endpoint block below for
+        # the two things that break without it (Pine Editor ignores keys, and
+        # stray keys leak into whatever the host app has focused).
+        focus_moondev_tab()
 
     def close(self) -> None:
         if self._ws is not None:
@@ -201,6 +208,83 @@ def list_tabs(port: int = CDP_PORT, timeout: float = 3.0) -> list[CDPTab]:
 MCP_TAB_MARKER = "moondev_mcp=1"
 
 
+# ============================================================================
+# 🌙 Moon Dev Code App control endpoint (optional, ignored on plain Chrome)
+#
+# When the chart lives inside Moon Dev Code App, CDP alone is not enough. CDP
+# can read and click a page, but it cannot give that page real KEYBOARD focus.
+# Two things break without it:
+#
+#   1. TradingView's Pine Editor only accepts keys when the page truly has
+#      focus. Without it, everything we "type" goes nowhere.
+#   2. A key the page does not handle (our Escape, for one) gets handed back by
+#      Chromium to the app hosting the page, and lands on whatever has focus
+#      there. Measured Aug 30 2026: with a terminal focused, an Escape sent to
+#      the chart arrived in that terminal as a raw \x1b. If a Claude Code
+#      session is sitting in it, that reads as "the user pressed Escape" and
+#      the run dies. Focusing the page first makes the leak stop dead.
+#
+# All of this is best-effort. On a standalone Chrome there is no endpoint, the
+# call fails in under a second, and nothing changes.
+# ============================================================================
+MOONDEV_CTRL_ENV = "MOONDEV_CTRL"
+MOONDEV_CTRL_DEFAULT = "http://127.0.0.1:8765"
+MOONDEV_ENDPOINT_FILE = (
+    Path.home() / "Library/Application Support/Moon Dev Code App/mcp-endpoint.json"
+)
+
+_moondev_ctrl_cache: Any = "unset"  # "unset" = not probed yet, None = not there
+
+
+def moondev_control_url() -> str | None:
+    """Base URL of the Code App's control endpoint, or None if it isn't running.
+
+    Order: MOONDEV_CTRL env var, then the app's own endpoint file, then the
+    default port. Probed once per process.
+    """
+    global _moondev_ctrl_cache
+    if _moondev_ctrl_cache != "unset":
+        return _moondev_ctrl_cache
+
+    candidates: list[str] = []
+    env = os.environ.get(MOONDEV_CTRL_ENV)
+    if env:
+        candidates.append(env.rstrip("/"))
+    try:
+        if MOONDEV_ENDPOINT_FILE.exists():
+            info = json.loads(MOONDEV_ENDPOINT_FILE.read_text())
+            if info.get("controlUrl"):
+                candidates.append(str(info["controlUrl"]).rstrip("/"))
+    except Exception:
+        pass
+    candidates.append(MOONDEV_CTRL_DEFAULT)
+
+    for base in candidates:
+        try:
+            r = requests.get(f"{base}/mcp/health", timeout=1.5)
+            if r.ok and r.json().get("app") == "Moon Dev Code App":
+                print(f"🌙 Moon Dev: driving the Code App browser via {base}")
+                _moondev_ctrl_cache = base
+                return base
+        except Exception:
+            continue
+
+    _moondev_ctrl_cache = None
+    return None
+
+
+def focus_moondev_tab() -> bool:
+    """Give the Code App's MCP tab real keyboard focus. No-op on plain Chrome."""
+    base = moondev_control_url()
+    if not base:
+        return False
+    try:
+        r = requests.post(f"{base}/mcp/tv/focus", timeout=5)
+        return bool(r.ok and r.json().get("ok"))
+    except Exception:
+        return False
+
+
 def find_tradingview_tab(port: int = CDP_PORT, url_match: str = TV_URL_MATCH) -> CDPTab:
     """Pick the tab whose URL contains tradingview.com. Raise if none found.
 
@@ -235,7 +319,12 @@ def open_tv_client(port: int = CDP_PORT, ensure_chrome: bool = True) -> CDPClien
     Convenience constructor: make sure Chrome is running, find the TV tab, return a
     connected client. Callers should use this as a context manager.
     """
-    if ensure_chrome:
+    # Moon Dev: If Moon Dev Code App is serving CDP on this port, that IS the
+    # browser we want — do not spawn a second Chrome beside it.
+    in_moondev_app = moondev_control_url() is not None
+    if ensure_chrome and not in_moondev_app:
         launch_chrome()  # no-op if already running
     tab = find_tradingview_tab(port)
+    # Moon Dev: the page gets real keyboard focus in CDPClient.connect(), so every
+    # caller is covered, not just this one.
     return CDPClient(tab.ws_url)
